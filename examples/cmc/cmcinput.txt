@@ -1,0 +1,10 @@
+timestep:1.0
+referenceenergy:0.0
+energyconvergence:1.e-8
+particlemass:1800
+particleposition:1.0
+numberofparticles:10000
+maximumsteps:2000
+minimumsteps:100
+potential:1
+numenergybins:50

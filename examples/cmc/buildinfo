@@ -1,0 +1,144 @@
+import subprocess, os.path
+
+# Preprocessing functions
+def preprocessedfilename(infile):
+    """
+    Returns the preprocessed file name for the source file name
+    passed in.
+    """
+    base, ext = os.path.splitext(infile)
+    
+    if ext == '.d':        
+        outfile = base + '.f'
+    elif ext == '.d90':
+        outfile = base + '.f90'
+    else:
+        outfile = infile
+        
+    return outfile
+    
+def preprocess(srcPath, outDir):
+    """
+    This function demonstrates how you can preprocess source files.
+    If you do not need a preprocessor, you can remove this function, and
+    the preprocessor related keys from the buildinfo dictionary.
+    This example assumes you want to use the C preprocessor for fortran files.
+    It expects a source file with extension d or d90, and produces a fortran file 
+    on output.
+    """
+    filename = os.path.basename(srcPath)
+    outFile = preprocessedfilename(filename)
+    outPath = os.path.join(outDir, outFile)
+    return (0 == subprocess.call('gcc -E -x c -P -C "%s" > "%s"' % (srcPath, outPath), shell=True))
+    
+    
+# Fortran file types
+fortranfiles = \
+{
+    'freeformregex'             : '.*\.f90$',
+    'fixedformregex'            : '.*\.f$',
+    'freeformpreprocessregex'   : '.*\.d90$',
+    'fixedformpreprocessregex'  : '.*\.d$',
+    'preprocessednamefunc'      : preprocessedfilename,
+    'preprocessfunc'            : preprocess,
+    'includefileregex'          : '.*\.fh$'
+}
+    
+   
+# Targets
+def newtarget(name, dir):
+    target = \
+        {
+            'name'          : name,
+            'rootdirs'      : [dir],
+            'buildsubdir'   : dir,
+            'libraryname'   : dir,
+            'skipdirs'      : ['CVS', '.svn'],
+            'skipfiles'     : ['.DS_Store'],
+            'dependson'     : [],
+            'compilegroups' : {
+            }
+        }
+    return target
+
+basetarget = newtarget('libbase', 'base')
+basetarget['compilegroups']['safe'] = ['HistogramBuilder.f90']
+
+cmctarget = newtarget('cmc', 'cmc')
+cmctarget['dependson'] = ['libbase']
+cmctarget['exename'] = 'cmc'
+cmctarget['mainprogramfile'] = 'cmc.f90'
+
+cmcteststarget = newtarget('cmctests', 'cmctests')
+cmcteststarget['dependson'] = ['libbase']
+cmcteststarget['exename'] = 'cmctests'
+cmcteststarget['mainprogramfile'] = 'cmctests.f90'
+
+targets = [basetarget, cmctarget, cmcteststarget]
+    
+    
+# Build configs
+defaultconfig = \
+{
+    'name' : 'default',
+    'buildsubdir' : 'default',
+    'compileroptions' : {
+        'archivecommand'    : 'ar -r',
+        'unarchivecommand'  : 'ar -d',
+        'ranlibcommand'     : 'ranlib -s',
+        'f77compiler'       : 'gfortran',
+        'f90compiler'       : 'gfortran',
+        'f77flags'          : '-c -m32 -ffixed-form',
+        'f90flags'          : '-c -m32 -ffree-form',
+        'modpathoption'     : '-I',
+        'ccompiler'         : 'gcc',
+        'cflags'            : '-c -m32 -O3 -funroll-loops -malign-natural',
+        'link'              : 'gfortran',
+        'linkflags'         : '',
+        'prioritylibs'      : '',
+        'otherlibs'         : '',
+        'compilegroupflags' : {
+            'default'       : '',
+            'safe'          : '-O0'
+        }
+    }
+}
+
+releaseconfig = \
+{
+    'name'                  : 'release',
+    'inherits'              : 'default',
+    'buildsubdir'           : 'release',
+    'installdir'            : '$FORAY_PROJECT_ROOT/bin.release',
+    'compileroptions' : {
+        'compilegroupflags' : {
+            'default'       : '-O3',
+            'safe'          : '-O2'
+        }
+    }
+}
+
+debugconfig = \
+{
+    'name'                  : 'debug',
+    'inherits'              : 'default',
+    'buildsubdir'           : 'debug',
+    'installdir'            : '$FORAY_PROJECT_ROOT/bin.debug',
+    'compileroptions' : {
+        'f77flags'          : '-c -g -m32 -ffixed-form -fbounds-check',
+        'f90flags'          : '-c -g -m32 -ffree-form -fbounds-check'
+    }
+}
+ 
+configs = [defaultconfig, releaseconfig, debugconfig]
+
+
+# Combine everything in buildinfo dictionary   
+buildinfo = \
+{
+    'builddir'      : '$FORAY_PROJECT_ROOT/build',
+    'fortranfiles'  : fortranfiles,
+    'targets'       : targets,
+    'defaultconfig' : 'debug',
+    'configs'       : configs
+}
