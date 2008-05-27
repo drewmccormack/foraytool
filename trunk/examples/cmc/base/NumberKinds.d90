@@ -1,0 +1,13 @@
+! This demonstrates using a preprocessor with foray.
+! In this case, the C preprocessor should replace the date
+! macro below
+
+module NumberKinds
+   implicit none
+  
+   integer, parameter                                   :: KREAL = kind(0.d0)
+   integer, parameter                                   :: KINT  = kind(1)
+
+   character(len=*), parameter                          :: date = __DATE__
+
+end module

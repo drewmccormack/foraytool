@@ -1,0 +1,1302 @@
+#!/usr/bin/env python
+import os, os.path, sys, re, string, logging, subprocess
+import time, shutil, threading
+
+# ---------
+# Globals
+# ---------
+PrintLock = threading.Lock()
+
+# ----------
+# Exceptions
+# ----------
+class InterruptException (Exception):
+    pass
+    
+# ---------
+# Logging
+# ---------
+logging.getLogger('').setLevel(logging.WARNING)
+
+# ---------
+# Functions
+# ---------
+def ExpandShellArgs(argsString):
+    result = os.popen('echo %s' % (argsString)).read()  # Perform any shell substitutions
+    result = result[:-1] # Chomp newline
+    return result
+    
+def MostRecentDate(date1, date2):
+    "Allows for None values."
+    if date1 and date2:
+        if date1 < date2:
+            return date2
+        else:
+            return date1
+    elif date1:
+        return date1
+    else:
+        return date2
+        
+def RunSubprocess(command):
+    import subprocess
+    success = True
+    try:
+        process = subprocess.Popen(command, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        output, error = process.communicate()
+    except OSError:
+        success = False
+    if success:
+        if process.returncode < 0:
+            print 'Build Interrupted'
+            success = False
+        elif process.returncode > 0:
+            success = False
+    return (success, output, error)
+
+# ---------
+# Classes
+# ---------
+class SourceFile:    
+    
+    preprocessFuncs = {}
+    
+    def __init__(self, path, projectRoot):
+        self._path = path
+        self._directDependencies = []
+        self._isMainProgram = False
+        self._projectRoot = projectRoot
+        self._dependencyCyclesChecked = False
+        self._buildConfig = None
+        self._target = None
+        self.resetBuildMetadata()
+        self._checksum = None
+        
+    def resetBuildMetadata(self):
+        self._lastBuilt = None
+        self._mostRecentBuildOfDependency = None
+        self._lastModified = None
+        self._buildTime = None
+        self._buildFailed = False
+        self._markedForBuilding = False
+        self._needsBuilding = None
+        self._lastCompileCommand = None
+        self._buildCompileCommand = None
+        self._lastChecksum = None
+        self._buildChecksum = None
+        
+    def updateWithMetadata(self, metadata):
+        "Metadata is a tuple that is used for persisting the file to disk."
+        if metadata:
+            timestamp, compileCommand, checksum = metadata
+            self.setLastBuilt(timestamp)
+            self.setBuildTime(timestamp)
+            self.setLastCompileCommand(compileCommand)
+            self.setBuildCompileCommand(compileCommand)
+            self.setLastChecksum(checksum)
+            self.setBuildChecksum(checksum)
+        else:  # Reset
+            self.resetBuildMetadata()
+                
+    def metadata(self):
+        return (self.buildTime(), self.buildCompileCommand(), self.buildChecksum())
+        
+    def requiresPreprocessing(self):
+        return False
+        
+    def preprocessedFilePath(self):
+        return self._path
+    
+    def path(self):
+        "Relative to the project root"
+        return self._path
+        
+    def fileName(self):
+        return os.path.basename(self._path)
+        
+    def absolutePath(self):
+        return os.path.join(self._projectRoot, self.path())
+        
+    def generatesObjectFile(self):
+        return True
+        
+    def objectFileName(self):
+        pathWithoutExt = os.path.splitext(self.path())[0]
+        return os.path.basename(pathWithoutExt) + '.o'
+        
+    def setBuildConfig(self, config):
+        import weakref
+        self._needsBuilding = None
+        self._buildConfig = weakref.proxy(config)
+        
+    def buildConfig(self):
+        return self._buildConfig
+        
+    def setTarget(self, target):
+        import weakref
+        self._needsBuilding = None
+        self._target = weakref.proxy(target)
+        
+    def target(self):
+        return self._target
+        
+    def setLastModified(self, lastModified):
+        self._needsBuilding = None
+        self._lastModified = lastModified
+    
+    def lastModified(self):
+        return self._lastModified
+        
+    def setLastBuilt(self, lastBuilt):
+        self._needsBuilding = None
+        self._lastBuilt = lastBuilt
+                
+    def lastBuilt(self):
+        return self._lastBuilt
+        
+    def setLastCompileCommand(self, flags):
+        self._needsBuilding = None
+        self._lastCompileCommand = flags
+        
+    def buildCompileCommand(self):
+        return self._buildCompileCommand
+      
+    def setBuildCompileCommand(self, flags):
+        self._buildCompileCommand = flags
+        
+    def lastCompileCommand(self):
+        return self._lastCompileCommand
+          
+    def compileCommand(self):
+        "Depends on build config, so created on the fly, and not stored."
+        return None
+        
+    def setLastChecksum(self, checksum):
+        self._needsBuilding = None
+        self._lastChecksum = checksum
+        
+    def lastChecksum(self):
+        return self._lastChecksum
+        
+    def setChecksum(self, checksum):
+        self._needsBuilding = None
+        self._checksum = checksum
+        
+    def checksum(self):
+        return self._checksum
+        
+    def setBuildChecksum(self, checksum):
+        self._buildChecksum = checksum
+    
+    def buildChecksum(self):
+        return self._buildChecksum
+        
+    def setBuildTime(self, buildTime):
+        "Most recent build time, including the current build"
+        self._buildTime = buildTime
+                
+    def buildTime(self):
+        return self._buildTime
+        
+    def buildFailed(self):
+        return self._buildFailed
+        
+    def setIsMainProgram(self, yn):
+        self._isMainProgram = yn
+        
+    def isMainProgram(self):
+        return self._isMainProgram
+        
+    def checksumOfFile(self):
+        import md5
+        fl = open(self.absolutePath(),'r')
+        checksum = md5.new(fl.read()).digest()
+        fl.close()
+        return checksum
+            
+    def build(self):
+        self._buildFailed = False
+        intermediateProductsDir = self._target.intermediateProductsDirectory(self._buildConfig)
+        os.chdir( intermediateProductsDir )
+        if self.preprocess():
+            if self.buildPreprocessedFile():
+                self.setBuildTime(time.time())
+                self.setBuildChecksum(self.checksum())
+                self.setBuildCompileCommand(self.compileCommand())
+            else:
+                self._buildFailed = True
+        else:
+            self._buildFailed = True
+        return not self._buildFailed
+        
+    def buildPreprocessedFile(self):
+        return self.runCompileCommand(self.compileCommand())
+        
+    def runCompileCommand(self, compileCommand):
+        if compileCommand == None: return True
+        PrintLock.acquire()
+        print 'Compiling %s' % (self.path())
+        logging.debug('Compile Command: %s' % (compileCommand))
+        PrintLock.release()
+        success, output, error = RunSubprocess(compileCommand + ' 2>&1')
+        if not success:
+            # Check if preprocessed file was empty. If so, ignore error
+            f = open(self.preprocessedFilePath(), 'r')
+            if f.read().strip() == '': 
+                success = True
+            else:
+                PrintLock.acquire()
+                print output
+                PrintLock.release()
+            f.close()
+        else:
+            # If the compile succeeded, check the output for any warnings to print
+            if re.search('warn', output, re.IGNORECASE):
+                print output
+        return success
+        
+    def isBuilt(self):
+        "Whether file has been built in this build."
+        if None == self._buildTime:
+            return False
+        else:
+            return self._buildTime > self._lastBuilt
+    
+    def isModified(self):
+        if not self._lastChecksum: 
+            return True
+        else:
+            return (self._checksum != self._buildChecksum) or (self._lastModified > self._lastBuilt)
+            
+    def compileCommandHasChanged(self):
+        return self._lastCompileCommand != self.compileCommand()
+                    
+    def addDirectDependency(self, sourceFile):
+        self._directDependencies.append(sourceFile)
+        
+    def dependenciesAreCyclic(self, fileStack, checkedFiles):
+        checkedFiles.add(self)
+        if self._dependencyCyclesChecked: 
+            fileStack.append(self)
+            return False, None
+        self._dependencyCyclesChecked = True
+        if self in fileStack:
+            return True, [f.path() for f in fileStack]
+        else:
+            fileStack.append(self)
+            for d in self._directDependencies:
+                areCyclic, failingFiles = d.dependenciesAreCyclic(fileStack, checkedFiles)
+                fileStack.pop()
+                if areCyclic:
+                    return True, failingFiles
+        return False, None       
+        
+    def mostRecentBuildOfDependency(self):
+        if self._mostRecentBuildOfDependency:
+            return self._mostRecentBuildOfDependency
+        mostRecent = None
+        for dep in self._directDependencies:
+            mostRecent = MostRecentDate(mostRecent, dep.lastBuilt())
+            mostRecent = MostRecentDate(mostRecent, dep.mostRecentBuildOfDependency())
+        self._mostRecentBuildOfDependency = mostRecent # Cache value
+        return mostRecent
+        
+    def needsBuilding(self):
+        """
+        Checks whether a dependent was compiled more recently than 
+        this file, or needs to be compiled.
+        """
+        if None != self._needsBuilding: 
+            return self._needsBuilding  # Use cached result for performance
+        needsBuilding = False
+        if self.isModified() or self.compileCommandHasChanged():
+            needsBuilding = True
+        elif self.mostRecentBuildOfDependency() and self.lastBuilt() and \
+            (self.mostRecentBuildOfDependency() > self.lastBuilt()):
+            needsBuilding = True
+        else:
+            for dep in self._directDependencies:
+                if dep.needsBuilding():
+                    needsBuilding = True
+                    break
+        self._needsBuilding = needsBuilding # Cache result for performance
+        return needsBuilding
+        
+    def canBuild(self):
+        """
+        Whether or not all the dependencies are satisfied to allow the file
+        to be built.
+        """
+        if self._buildFailed: return False
+        canBuild = True
+        for dep in self._directDependencies:
+            if dep.needsBuilding() and not dep.isBuilt():
+                canBuild = False
+                break
+        return canBuild
+        
+    def preprocessedFilePath(self):
+        f = self.preprocessFuncs.get('preprocessedFileNameFunction')
+        if f:
+            filename = f(self.fileName())
+        else:
+            filename = self.fileName()
+        return os.path.join(self.target().intermediateProductsDirectory(self.buildConfig()), filename)
+        
+    def preprocess(self):
+        if self.requiresPreprocessing():
+            f = self.preprocessFuncs['preprocessorFunction']
+            return f(self.absolutePath(), self.target().intermediateProductsDirectory(self.buildConfig()))
+        else:
+            # Copy the source file
+            preprocessedPath = self.preprocessedFilePath()
+            shutil.copy(self.absolutePath(), preprocessedPath)
+            return True
+        
+    TreeStringIndentLevel = 4
+    def dependencyString(self, indent):
+        aString = ''
+        for dependentFile in self._directDependencies:
+            aString += '\n' + indent * ' ' + dependentFile.path()
+            aString += dependentFile.dependencyString(indent + self.TreeStringIndentLevel)
+        return aString
+        
+    def __str__(self):
+        s =  '%s %s\n' %(str(self.__class__), self.path())
+        s += 'Last Built: %s\n' % (self.lastBuilt())
+        s += 'Last Modified: %s\n' % (self.lastModified())
+        s += 'Can Build: %s\n' % (self.canBuild())
+        s += 'Needs Building: %s\n' % (self.needsBuilding())
+        s += 'Marked for Building: %s\n' % (self.markedForBuilding())
+        s += 'Dependencies'
+        s += self.dependencyString(self.TreeStringIndentLevel) + '\n'
+        return s
+        
+                
+class FortranSourceFile (SourceFile):
+    
+    freeFormRegEx = '.*\.(F|f90|F90)$'
+    fixedFormRegEx = '.*\.f$'
+    freeFormPreprocessRegEx = None
+    fixedFormPreprocessRegEx = None
+    includeFileRegEx = None
+    
+    @classmethod
+    def configure(cls, infoDict):
+        if not infoDict: return
+        cls.freeFormRegEx = infoDict.setdefault('freeformregex', cls.freeFormRegEx)
+        cls.fixedFormRegEx = infoDict.setdefault('fixedformregex', cls.fixedFormRegEx)
+        cls.freeFormPreprocessRegEx = infoDict.setdefault('freeformpreprocessregex', cls.freeFormPreprocessRegEx)
+        cls.fixedFormPreprocessRegEx = infoDict.setdefault('fixedformpreprocessregex', cls.fixedFormPreprocessRegEx)
+        cls.includeFileRegEx = infoDict.setdefault('includefileregex', cls.includeFileRegEx)
+        cls.preprocessFuncs['preprocessorFunction'] = infoDict.setdefault('preprocessfunc', None)
+        cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.setdefault('preprocessednamefunc', None)
+        
+    @classmethod
+    def fileNameMatchesType(cls, fileName):
+        return ( cls.freeFormRegEx and re.match(cls.freeFormRegEx, fileName) ) or \
+               ( cls.fixedFormRegEx and re.match(cls.fixedFormRegEx, fileName) ) or \
+               ( cls.freeFormPreprocessRegEx and re.match(cls.freeFormPreprocessRegEx, fileName) ) or \
+               ( cls.fixedFormPreprocessRegEx and re.match(cls.fixedFormPreprocessRegEx, fileName) )
+               
+    @classmethod 
+    def allFileRegExs(cls):
+        all = []
+        if cls.freeFormRegEx: all.append(cls.freeFormRegEx)
+        if cls.fixedFormRegEx: all.append(cls.fixedFormRegEx)
+        if cls.freeFormPreprocessRegEx: all.append(cls.freeFormPreprocessRegEx)
+        if cls.fixedFormPreprocessRegEx: all.append(cls.fixedFormPreprocessRegEx)
+        if cls.includeFileRegEx: all.append(cls.includeFileRegEx)
+        return all
+
+    def requiresPreprocessing(self):
+        return \
+            ( self.freeFormPreprocessRegEx and
+              re.match(self.freeFormPreprocessRegEx, self.fileName()) ) or \
+            ( self.fixedFormPreprocessRegEx and 
+              re.match(self.fixedFormPreprocessRegEx, self.fileName()) )
+              
+    def isFreeForm(self):
+        return \
+            ( self.freeFormPreprocessRegEx and
+              re.match(self.freeFormPreprocessRegEx, self.fileName()) ) or \
+            ( self.freeFormRegEx and 
+              re.match(self.freeFormRegEx, self.fileName()) )
+
+    def isFixedForm(self):
+        return \
+            ( self.fixedFormPreprocessRegEx and
+              re.match(self.fixedFormPreprocessRegEx, self.fileName()) ) or \
+            ( self.fixedFormRegEx and 
+              re.match(self.fixedFormRegEx, self.fileName()) )
+        
+    def generatesObjectFile(self):
+        return not ( self.includeFileRegEx and 
+                     re.match(self.includeFileRegEx, self.fileName()) )
+            
+    def compileCommand(self):
+        if self.isFixedForm():
+            compileCommand = self.buildConfig().fortran77CompileCommand(self.target(), self)
+        elif self.isFreeForm():
+            compileCommand = self.buildConfig().fortran90CompileCommand(self.target(), self)
+        else:
+            compileCommand = None
+        return compileCommand
+
+    
+class CSourceFile (SourceFile):
+    
+    fileNameRegEx = '.*\.c$'
+    includeFileRegEx = '.*\.h$'
+    preprocessFileNameRegEx = None
+    
+    @classmethod
+    def configure(cls, infoDict):
+        if not infoDict: return
+        cls.fileNameRegEx = infoDict.setdefault('fileregex', cls.fileNameRegEx)
+        cls.includeFileRegEx = infoDict.setdefault('includefileregex', cls.includeFileRegEx)
+        cls.preprocessFileNameRegEx = infoDict.setdefault('preprocessfileregex', cls.preprocessFileNameRegEx)
+        cls.preprocessFuncs['preprocessorFunction'] = infoDict.get('preprocessfunc')
+        cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.get('preprocessednamefunc')
+    
+    @classmethod
+    def fileNameMatchesType(cls, fileName):
+        return (cls.fileNameRegEx and re.match(cls.fileNameRegEx, fileName)) or \
+               (cls.includeFileRegEx and re.match(cls.includeFileRegEx, fileName)) or \
+               (cls.preprocessFileNameRegEx and re.match(cls.preprocessFileNameRegEx, fileName)) 
+
+    @classmethod 
+    def allFileRegExs(cls):
+        all = []
+        if cls.fileNameRegEx: all.append(cls.fileNameRegEx)
+        if cls.preprocessFileNameRegEx: all.append(cls.preprocessFileNameRegEx)
+        if cls.includeFileRegEx: all.append(cls.includeFileRegEx)
+        return all
+                     
+    def requiresPreprocessing(self):
+        "Whether an extra preprocessor has to be run (on top of the standard C preprocessor)"
+        return self.preprocessFileNameRegEx and re.match(self.preprocessFileNameRegEx, self.fileName())
+              
+    def generatesObjectFile(self):
+        return not ( self.includeFileRegEx and re.match(self.includeFileRegEx, self.fileName()) )
+            
+    def compileCommand(self):
+        if (self.fileNameRegEx and re.match(self.fileNameRegEx, self.fileName()) ) or \
+           (self.preprocessFileNameRegEx and re.match(self.preprocessFileNameRegEx, self.fileName())):
+            compileCommand = self.buildConfig().cCompileCommand(self.target(), self)
+        else:
+            compileCommand = None
+        return compileCommand
+            
+        
+class SourceTree:
+    def __init__(self, rootDirs, sourceTreesDependedOn, projectRoot, skipdirs, skipfiles, 
+        mainProgramFile = None, noDependencies = False):
+        self.rootDirs= rootDirs
+        self.projectRoot = projectRoot
+        self.skipfiles = set(skipfiles)
+        self.skipdirs = set(skipdirs)
+        self.mainProgramFile = mainProgramFile
+        self.moduleUseRegEx = re.compile(r'^\s*(use|module|\*copy)\s+([\d\w_]+)', re.IGNORECASE | re.MULTILINE)
+        self.sourceTreesDependedOn = sourceTreesDependedOn
+        self.noDependencies = noDependencies
+        self.sourceFiles = self.createSourceFiles()     
+        
+    def sourceFiles(self):
+        return self.sourceFiles
+        
+    def sourceFileWithName(self, name):
+        matchingFiles = [f for f in self.sourceFiles if self.mainProgramFile == os.path.basename(f.path())]
+        if len(matchingFiles) == 1:
+            return matchingFiles[0]
+        else:
+            return None
+        
+    def containedModulesDict(self):
+        "Module names contained in each file in tree, with file path as key"
+        return self.containedModsDict
+        
+    def createSourceFiles(self):    
+        """
+        Create source file objects representing source files in the file
+        system.
+        """
+        sourceFiles = []
+        def addFiles(regExString, sourceFileClass):
+            if not regExString: return
+            for rootDir in self.rootDirs:
+                files = self.locateFiles(regExString, rootDir)
+                for path, modDate, checksum in files:
+                    newFile = sourceFileClass(path, self.projectRoot)
+                    newFile.setLastModified(modDate)
+                    newFile.setChecksum(checksum)
+                    if os.path.basename(path) == self.mainProgramFile:
+                        newFile.setIsMainProgram(True)
+                    sourceFiles.append(newFile)
+        logging.debug('Searching for fortran source files')
+        for regEx in FortranSourceFile.allFileRegExs():
+            addFiles(regEx, FortranSourceFile)
+        if not self.noDependencies: self.setupFortranDependencies(sourceFiles)
+        logging.debug('Searching for c source files')
+        for regEx in CSourceFile.allFileRegExs():
+            addFiles(regEx, CSourceFile)
+        return sourceFiles
+        
+    def createSourceFileForPath(self, path):
+        "Factory method to create a SourceFile object for the path given."
+        fileName = os.path.basename(path)
+        if FortranSourceFile.fileNameMatchesType(fileName): 
+            return FortranSourceFile(path, self.projectRoot)
+        elif CSourceFile.fileNameMatchesType(fileName): 
+            return CSourceFile(path, self.projectRoot)
+        else:
+            raise Exception, 'Unknown file type in sourceFileForPath'
+        
+    def locateFiles(self, fileNameRegEx, rootDir):
+        """
+        Locates files matching reg ex passed. Returns list of tuples,
+        containing file path and modification date.
+        """
+        import md5
+        logging.debug('locating files in directory %s' % (rootDir))
+        fileTuples = []
+        regEx = re.compile(fileNameRegEx)
+        os.chdir(self.projectRoot)
+        for root, dirs, files in os.walk(rootDir):
+            for skipdir in self.skipdirs:
+                if skipdir in dirs: dirs.remove(skipdir)
+            for f in files:
+                if os.path.basename(f) in self.skipfiles: continue
+                if regEx.match(f): 
+                    filePath = os.path.join(root,f)
+                    prefix = os.path.commonprefix([filePath, self.projectRoot])
+                    filePath = filePath[len(prefix):]
+                    if filePath[0] == os.sep: filePath = filePath[1:]
+                    fl = open(filePath,'r')
+                    checksum = md5.new(fl.read()).digest()
+                    fl.close()
+                    fileTuples.append( (filePath, os.path.getmtime(filePath), checksum) )
+        return fileTuples
+        
+    def updateFileStatus(self, fileMetaData, buildConfig, target):
+        logging.debug('Updating file status')
+        for f in self.sourceFiles:
+            f.setTarget(target)
+            f.setBuildConfig(buildConfig)
+            metadata = fileMetaData.get(f.path())
+            f.updateWithMetadata(metadata)
+
+    def updateFileMetaData(self, fileMetaData):
+        logging.debug('Updating file metadata')
+        for f in self.sourceFiles:
+            fileMetaData[f.path()] = f.metadata()
+        pathsToRemove = self.removedFiles(fileMetaData)
+        for p in pathsToRemove: del fileMetaData[p]
+                
+    def removedFiles(self, fileMetaData):
+        "Returns set of files removed since last build. Paths are project root relative."
+        timestampPaths =  set(fileMetaData.keys())
+        sourceFilePaths = set([f.path() for f in self.sourceFiles])
+        pathsRemoved = timestampPaths.difference(sourceFilePaths)
+        return pathsRemoved
+        
+    def buildableSourceFiles(self):
+        """
+        Returns a list of source files that need building, and for
+        which dependencies are satisfied.
+        """
+        logging.debug('Getting buildable source files')
+        files = []
+        for s in self.sourceFiles:
+            if self.noDependencies:
+                if s.isModified() and not s.isBuilt():
+                    files.append(s)
+            else:
+                if s.needsBuilding() and s.canBuild() and not s.isBuilt():
+                    files.append(s)
+        return files
+        
+    def scanFileForModules(self, filePath):
+        usedModules = set()
+        containedModules = set()
+        includedFiles = set()
+        f = open(filePath,'r')
+        fileContent = f.read()
+        f.close()
+        matches = self.moduleUseRegEx.findall(fileContent)
+        for m in matches:
+            if m[0].lower() == 'use':
+                usedModules.add(m[1].lower())
+            elif m[0].lower() == '*copy':
+                includedFiles.add(m[1].lower())
+            else:
+                containedModules.add(m[1].lower())
+        return list(usedModules), list(containedModules), list(includedFiles)
+        
+    def setupFortranDependencies(self, fortranSourceFiles):
+        logging.debug('Setting fortran dependencies')
+        self.containedModsDict = {}
+        usedModsDict = {}
+        includedFilesDict = {}
+        for f in fortranSourceFiles:
+            usedMods, containedMods, includedFiles = self.scanFileForModules(f.path())
+            usedModsDict[f] = usedMods
+            includedFilesDict[f] = includedFiles
+            for m in containedMods:
+                self.containedModsDict[m] = f
+        for f in fortranSourceFiles:
+            for usedMod in usedModsDict[f]:
+                fileWithUsedMod = self.containedModsDict.get(usedMod)
+                if not fileWithUsedMod: 
+                    # Search for dependency in other source trees
+                    for sourceTree in self.sourceTreesDependedOn:
+                        fileWithUsedMod = sourceTree.containedModulesDict().get(usedMod)
+                        if fileWithUsedMod: break
+                if fileWithUsedMod and f != fileWithUsedMod: f.addDirectDependency(fileWithUsedMod)
+            for includeFile in includedFilesDict[f]:
+                includeFileName = includeFile + '.fh'
+                includedSourceFiles = [ifile for ifile in fortranSourceFiles if \
+                    ifile.fileName().lower() == includeFileName.lower()]
+                if len(includedSourceFiles) == 1: 
+                    f.addDirectDependency(includedSourceFiles[0])
+                else:
+                    raise Exception, 'Could not find include file %s' % (includeFileName)
+                
+        # Check for cycles
+        print 'Checking for cyclic dependencies'
+        remainingFiles = set(fortranSourceFiles)
+        while len(remainingFiles) > 0:
+            checkedFiles = set()
+            fileStack = []
+            f = remainingFiles.pop() 
+            areCyclic, failingFiles = f.dependenciesAreCyclic(fileStack, checkedFiles)
+            if areCyclic:
+                raise Exception('The following files have a cyclic dependency: %s' % (failingFiles))
+            else:
+                remainingFiles.difference_update(checkedFiles)
+
+    def __iter__(self):
+        return iter(self.sourceFiles)
+            
+     
+class Target:
+    def __init__(self, targetInfoDict, buildRootDir, projectRoot, setupFunc = None):    
+        self.targetInfoDict = targetInfoDict    
+        self.isBuilt = False
+        self.lastConfig = None
+        self._sourceTree = None
+        self.buildRootDir = buildRootDir
+        self.targetDependencies = None
+        self.buildShouldStop = False
+        self.buildQueue = None
+        self.projectRoot = projectRoot
+        self.setupFuncTuple = (setupFunc,)  # Using a tuple to avoid binding function to class
+        
+    def mainProgramFile(self):
+        return self.targetInfoDict.get('mainprogramfile')
+        
+    def sourceTree(self):
+        return self._sourceTree
+
+    def rootSourceDirectories(self):
+        return [os.path.join(self.projectRoot, d) for d in self.targetInfoDict['rootdirs']]
+        
+    def buildSubDirectory(self):
+        return self.targetInfoDict['buildsubdir']
+        
+    def name(self):
+        return self.targetInfoDict['name']
+        
+    def executableName(self):
+        return self.targetInfoDict['exename']
+        
+    def targetDependencies(self):
+        return self.targetDependencies
+        
+    def moduleFilePath(self, buildConfig):
+        modulePath = [self.moduleFileDirectory(buildConfig)]
+        for t in self.targetDependencies:
+            modulePath.append(t.moduleFileDirectory(buildConfig))
+        return modulePath
+        
+    def dependentLibraryNames(self):
+        names = [self.libraryName()]
+        for t in self.targetDependencies:
+            names.append(t.libraryName())
+        return names
+        
+    def dependentLibraryPaths(self, buildConfig):
+        paths = [self.productLibraryPath(buildConfig)]
+        for t in self.targetDependencies:
+            paths.append(t.productLibraryPath(buildConfig))
+        return paths
+        
+    def moduleFileDirectory(self, buildConfig):
+        return self.intermediateProductsDirectory(buildConfig)
+        
+    def libraryName(self):
+        return self.targetInfoDict['libraryname']
+
+    def fullLibraryName(self):
+        return 'lib' + self.targetInfoDict['libraryname'] + '.a'
+        
+    def compileGroups(self):
+        return self.targetInfoDict['compilegroups']
+        
+    def buildRootDirectory(self):
+        "Absolute path to build root."
+        return self.buildRootDir
+        
+    def productInstallDirectory(self, buildConfig):
+        return buildConfig.installDirectory()
+        
+    def productLibraryDirectory(self, buildConfig):
+        return os.path.join(self.buildRootDirectory(), buildConfig.buildSubDirectory(), 'lib')
+        
+    def productLibraryPath(self, buildConfig):
+        return os.path.join(self.productLibraryDirectory(buildConfig), self.fullLibraryName())
+
+    def productExecutableDirectory(self, buildConfig):
+        return os.path.join(self.buildRootDirectory(), buildConfig.buildSubDirectory(), 'bin')
+        
+    def intermediateProductsDirectory(self, buildConfig):
+        return os.path.join(self.buildRootDir, self.buildSubDirectory() + '.build', 
+            buildConfig.buildSubDirectory())
+            
+    def updateTargetDependencies(self, allTargets):
+        self.targetDependencies = []
+        for targetName in self.targetInfoDict['dependson']: 
+            target = [t for t in allTargets if t.name() == targetName][0]
+            self.targetDependencies.append(target)
+            
+    def isFirstBuild(self, buildConfig):
+        return os.path.exists(self.intermediateProductsDirectory(buildConfig))
+            
+    def build(self, buildConfig, allFileMetaData, clean, numThreads = 1, noDependencies = False):
+        if self.isBuilt and self.lastConfig == buildConfig: return True, 0
+        self.isBuilt = False
+        self.lastConfig = buildConfig
+        self.buildShouldStop = False
+        intermediatesDir = self.intermediateProductsDirectory(buildConfig)
+        if not os.path.exists(intermediatesDir): 
+            os.makedirs(intermediatesDir)
+        dependenciesBuilt = True
+        numFilesBuilt = 0
+        for t in self.targetDependencies:
+            logging.debug('Building dependency target %s' % (t.name()))
+            dependenciesBuilt, n = t.build(buildConfig, allFileMetaData, clean, numThreads, noDependencies)
+            numFilesBuilt += n
+            if not dependenciesBuilt: break
+        fileMetaData = allFileMetaData.setdefault(buildConfig.name(),{}).setdefault(self.name(),{})
+        if clean: fileMetaData.clear()
+        if dependenciesBuilt and not self.buildShouldStop:
+            self.setBuildEnvironment(buildConfig)
+            self.isBuilt, n = self.compileSources(buildConfig, fileMetaData, numThreads, noDependencies)
+            numFilesBuilt += n
+            if self.isBuilt and 'exename' in self.targetInfoDict: 
+                self.isBuilt = self.compileExecutable(buildConfig)
+                if not self.isBuilt:
+                    print 'Failed to link executable for target %s' % (self.name())
+        return self.isBuilt, numFilesBuilt
+        
+    def install(self, buildConfig):
+        import shutil
+        if 'exename' not in self.targetInfoDict: return
+        print 'Installing %s' % (self.name())
+        exeDir = os.path.join(self.projectRoot, self.productExecutableDirectory(buildConfig))
+        exePath = os.path.join(exeDir, self.executableName())
+        binDir = self.productInstallDirectory(buildConfig)
+        shutil.copy(exePath, binDir)
+        
+    def stopBuild(self):
+        self.buildShouldStop = True
+        for t in self.targetDependencies:
+            t.stopBuild()
+        if self.buildQueue:
+            self.buildQueue.stopBuild()
+            
+    def setBuildEnvironment(self, buildConfig):
+        os.environ['FORAY_TARGET_ROOT_DIRS'] = string.join([r'"%s"' % (d) for d in self.rootSourceDirectories()])
+        os.environ['FORAY_INTERMEDIATE_PRODUCTS_DIR'] = self.intermediateProductsDirectory(buildConfig)
+        os.environ['FORAY_LIBRARY_PRODUCTS_DIR'] = self.productLibraryDirectory(buildConfig)
+        os.environ['FORAY_EXECUTABLE_PRODUCTS_DIR'] = self.productExecutableDirectory(buildConfig)
+        os.environ['FORAY_INSTALL_DIR'] = self.productInstallDirectory(buildConfig)
+            
+    def compileSources(self, buildConfig, fileMetaData, numThreads, noDependencies):
+        print 'Starting build for target "%s" with config "%s"' % (self.name(), buildConfig.name())
+        libDirPath = self.productLibraryDirectory(buildConfig)
+        if not os.path.exists(libDirPath): 
+            os.makedirs(libDirPath)
+            if self.setupFuncTuple[0]: 
+                self.setupFuncTuple[0](self.projectRoot, 
+                    self.rootSourceDirectories(),     
+                    self.intermediateProductsDirectory(buildConfig), 
+                    self.productLibraryDirectory(buildConfig), 
+                    self.productExecutableDirectory(buildConfig), 
+                    self.productInstallDirectory(buildConfig) )
+        if not self._sourceTree: 
+            mainProgramFile = self.targetInfoDict.get('mainprogramfile')
+            self._sourceTree = SourceTree(self.rootSourceDirectories(), 
+                [t.sourceTree() for t in self.targetDependencies],
+                self.projectRoot, 
+                self.targetInfoDict['skipdirs'],
+                self.targetInfoDict['skipfiles'],
+                mainProgramFile,
+                noDependencies)
+        self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFiles(fileMetaData))
+        logging.debug('Updating file status')
+        self._sourceTree.updateFileStatus(fileMetaData, buildConfig, self)
+        libFilePath = os.path.join(self.productLibraryDirectory(buildConfig), self.fullLibraryName())
+        self.buildQueue = BuildQueue(self._sourceTree, buildConfig, self, libFilePath, numThreads)
+        success = False
+        numFilesBuilt = 0
+        if not self.buildShouldStop: 
+            success, numFilesBuilt = self.buildQueue.buildSource()
+            if success and numFilesBuilt > 0:
+                # Run ranlib
+                indexLibCommand = buildConfig.indexLibraryCommand(self)
+                logging.debug('Indexing library: ' + indexLibCommand)
+                success, output, error = RunSubprocess(indexLibCommand) 
+                if not success: 
+                    print 'ranlib failed'
+                    print output
+                    print error
+        self.buildQueue = None
+        self._sourceTree.updateFileMetaData(fileMetaData)
+        if success:
+            statusString = 'Compiled library'
+        elif self.buildShouldStop:
+            statusString = 'Compiling interrupted'
+        else:
+            statusString = 'Failed to build library'
+        print statusString + ' for target "%s" and config "%s"' % (self.name(), buildConfig.name())
+        return success, numFilesBuilt
+
+    def compileExecutable(self, buildConfig):
+        exeDirPath = self.productExecutableDirectory(buildConfig)
+        if not os.path.exists(exeDirPath): os.makedirs(exeDirPath)
+        os.chdir(exeDirPath)
+        exeCommand = buildConfig.linkExecutableCommand(self)
+        print 'Compiling executable for %s' % (self.name())
+        logging.debug('Compile command: %s' % (exeCommand))
+        success, output, error = RunSubprocess(exeCommand)
+        if not success: 
+            if output: print output
+            if error: print error
+        return success
+        
+    def archiveBuildProducts(self, buildConfig, sourceFiles):
+        print 'Archiving object files'
+        sourceFilesToArchive = [s for s in sourceFiles if not s.isMainProgram()]
+        if len(sourceFilesToArchive) == 0: return
+        command = buildConfig.archiveCommand(self, sourceFilesToArchive)
+        logging.debug('Archiving command: %s' % (command))
+        if command: 
+            success, output, error = RunSubprocess(command)
+            if not success: 
+                if output: print output
+                if error: print error
+        
+    def unarchiveBuildProducts(self, buildConfig, sourceFilePaths):
+        "Removes object files corresponding to the project relative paths passed."
+        print 'Removing object files for which source files no longer exist'
+        sourceFiles = [self._sourceTree.createSourceFileForPath(p) for p in sourceFilePaths]
+        sourceFiles = [f for f in sourceFiles if f.generatesObjectFile()]
+        if len(sourceFiles) == 0: return
+        command = buildConfig.unarchiveCommand(self, sourceFiles)
+        logging.debug('Unarchiving command: %s' % (command))
+        if command: 
+            success, output, error = RunSubprocess(command)
+            if not success: 
+                if output: print output
+                if error: print error    
+                    
+class BuildConfig:
+    def __init__(self, configDict, projectRoot):
+        self.configDict = configDict
+        self.projectRoot = projectRoot
+        
+    def name(self):
+        return self.configDict['name']
+        
+    def installDirectory(self):
+        return ExpandShellArgs(self.configDict['installdir'])
+
+    def buildSubDirectory(self):
+        return self.configDict['buildsubdir']
+        
+    def compileGroupForFile(self, target, sourceFile):
+        fileName = os.path.split(sourceFile.path())[1]
+        compileGroups = target.compileGroups()
+        fileGroup = 'default'
+        for groupName, fileNames in compileGroups.iteritems():
+            if fileName in fileNames:
+                fileGroup = groupName
+                break
+        return fileGroup
+        
+    def modulePathOptions(self, target):
+        modulePath = target.moduleFilePath(self)
+        optionString = self.configDict['compileroptions']['modpathoption']
+        moduleString = ''
+        if len(modulePath) > 0: 
+            moduleString = reduce( lambda x, y: '%s %s "%s"' % (x, optionString, y), modulePath, '' )
+        return moduleString
+        
+    def linkLibraryOptions(self, target):
+        libraryPath = '-L"%s" ' % (target.productLibraryDirectory(self))
+        dependentLibraryNames = target.dependentLibraryNames()
+        dependentLibraryPaths = target.dependentLibraryPaths(self)
+        dependentLibraryNames = [l[0] for l in zip(dependentLibraryNames, dependentLibraryPaths) \
+            if os.path.exists(l[1])] # Filter non-existent libraries out
+        optionsString = ''
+        if len(dependentLibraryNames) > 0:
+            optionsString = reduce( lambda x, y: '%s -l%s' % (x, y), dependentLibraryNames, libraryPath )
+        return optionsString
+        
+    def fortranCompileCommand(self, target, sourceFile, compilerKey, flagsKey):
+        compilerOptionsDict = self.configDict['compileroptions']
+        compileGroup = self.compileGroupForFile(target, sourceFile)
+        compileGroupFlags = compilerOptionsDict['compilegroupflags'][compileGroup]
+        compiler = compilerOptionsDict[compilerKey]
+        flags = compilerOptionsDict[flagsKey]
+        modPathFlags = self.modulePathOptions(target)
+        sourceFilePath = os.path.join(self.projectRoot, sourceFile.preprocessedFilePath())
+        return '%s %s %s %s "%s"' % (compiler, flags, compileGroupFlags, modPathFlags, sourceFilePath)
+       
+    def fortran77CompileCommand(self, target, sourceFile):
+        return self.fortranCompileCommand(target, sourceFile, 'f77compiler', 'f77flags')
+        
+    def fortran90CompileCommand(self, target, sourceFile):
+         return self.fortranCompileCommand(target, sourceFile, 'f90compiler', 'f90flags')
+         
+    def cCompileCommand(self, target, sourceFile):
+        compilerOptionsDict = self.configDict['compileroptions']
+        compileGroup = self.compileGroupForFile(target, sourceFile)
+        compileGroupFlags = compilerOptionsDict['compilegroupflags'][compileGroup]
+        compiler = compilerOptionsDict['ccompiler']
+        flags = compilerOptionsDict['cflags']
+        sourceFilePath = os.path.join(self.projectRoot, sourceFile.preprocessedFilePath())
+        return '%s %s %s "%s"' % (compiler, flags, compileGroupFlags, sourceFilePath)
+         
+    def archiveCommand(self, target, sourceFiles):
+        """
+        Should only be called once object files have been created, because
+        it checks for their existence.
+        """
+        libPath = target.productLibraryPath(self)
+        intermedPath = target.intermediateProductsDirectory(self)
+        paths = [s.objectFileName() for s in sourceFiles if
+            s.generatesObjectFile() and 
+            os.path.exists(os.path.join(intermedPath,s.objectFileName()))]
+        paths = string.join(paths)
+        if len(paths) == 0: return None
+        changeDirCommand = 'cd "%s"' % (intermedPath)
+        arCommand = self.configDict['compileroptions']['archivecommand']
+        arCommand = '%s "%s" %s' % (arCommand, libPath, paths)
+        removeCommand = 'rm ' + paths
+        return string.join([changeDirCommand, arCommand, removeCommand], ' ; ')
+        
+    def unarchiveCommand(self, target, sourceFiles):
+        libPath = target.productLibraryPath(self)
+        objects = string.join([s.objectFileName() for s in sourceFiles if s.generatesObjectFile()])
+        if len(objects) == 0: return None
+        unarchCommand = self.configDict['compileroptions']['unarchivecommand']
+        unarchCommand = '%s "%s" %s' % (unarchCommand, libPath, objects)
+        return unarchCommand
+        
+    def indexLibraryCommand(self, target):
+        libPath = target.productLibraryPath(self)
+        ranlibCommand = self.configDict['compileroptions']['ranlibcommand']
+        return 'if [ -e "%s" ]; then %s "%s" ; fi' % (libPath, ranlibCommand, libPath)
+    
+    def linkExecutableCommand(self, target):
+        mainProgramFileName = target.mainProgramFile()
+        mainSourceFile = target.sourceTree().sourceFileWithName(mainProgramFileName)
+        mainObjectName = mainSourceFile.objectFileName()
+        intermedPath = target.intermediateProductsDirectory(self)
+        mainObjectPath = os.path.join(intermedPath, mainObjectName)
+        exeName = target.executableName()
+        libs = self.linkLibraryOptions(target)
+        c = self.configDict['compileroptions']
+        linkCommand = '%s %s -o %s "%s" %s %s %s' % \
+            (c['link'], c['linkflags'], exeName, mainObjectPath, c['prioritylibs'], libs, c['otherlibs'])
+        return linkCommand
+        
+            
+class BuildQueue:
+    """
+    This class schedules file compilations. It takes account of dependencies, and 
+    is optimized for working on parallel systems.
+    """
+    def __init__(self, sourceTree, buildConfig, target, libFilePath, numThreads):
+        import threading
+        self.sourceTree = sourceTree
+        self.buildConfig = buildConfig
+        self.target = target
+        self.libFilePath = libFilePath
+        self.numParallelThreads = numThreads
+        self.buildableSourceFilesLock = threading.Lock()
+        self.builtSourceFilesLock = threading.Lock()
+        self.buildShouldStop = False
+        
+    def buildSourceFilesInThread(self):
+        
+        def getNextSourceFile():
+            self.buildableSourceFilesLock.acquire()
+            if len(self.buildableSourceFiles) > 0:
+                f = self.buildableSourceFiles.pop()
+            else:
+                f = None
+            self.buildableSourceFilesLock.release()
+            return f
+            
+        try:
+            f = getNextSourceFile()
+            while f and not self.buildShouldStop:     
+                success = f.build()
+                if success:
+                    self.builtSourceFilesLock.acquire()
+                    self.builtSourceFiles.append(f)
+                    self.builtSourceFilesLock.release()
+                    f = getNextSourceFile()
+                else:
+                    self.buildShouldStop = True
+        except Exception, e:
+            print 'An error occurred: ', e
+            self.buildShouldStop = True
+                      
+    ArchiveThreshold = 30
+    def buildSource(self):
+        import threading
+        self.buildShouldStop = False
+        self.buildableSourceFiles = self.sourceTree.buildableSourceFiles()
+        numFilesBuilt = 0
+        numFilesBuiltSinceLastArchive = 0
+        self.builtSourceFiles = []
+        while len(self.buildableSourceFiles) > 0 and not self.buildShouldStop:
+            numBuiltBefore = len(self.builtSourceFiles)
+            threads = []
+            for threadIndex in range(self.numParallelThreads):
+                threads.append( threading.Thread(target=self.buildSourceFilesInThread) )
+                threads[-1].start()
+            for thread in threads:
+                thread.join()
+            numBuiltThisRound =  len(self.builtSourceFiles) - numBuiltBefore
+            numFilesBuilt += numBuiltThisRound
+            numFilesBuiltSinceLastArchive += numBuiltThisRound
+            if numFilesBuiltSinceLastArchive >= BuildQueue.ArchiveThreshold:
+                self.target.archiveBuildProducts(self.buildConfig, self.builtSourceFiles)
+                numFilesBuiltSinceLastArchive = 0
+                self.builtSourceFiles = []
+            if not self.buildShouldStop:
+                self.buildableSourceFiles = self.sourceTree.buildableSourceFiles()
+        self.target.archiveBuildProducts(self.buildConfig, self.builtSourceFiles)
+        return (not self.buildShouldStop), numFilesBuilt
+        
+    def stopBuild(self):
+        self.buildShouldStop = True
+ 
+    
+class Builder:
+    def __init__(self, buildInfo, targetNames, configNames, projectRoot, numThreads, clean, noDependencies, debug):    
+            
+        # Store ivars
+        self.buildInfo = buildInfo
+        self.projectRoot = projectRoot
+        self.numThreads = numThreads
+        self.clean = clean
+        self.noDependencies = noDependencies
+        self.buildCancelled = False
+        self.debug = debug
+                
+        # Setup build configurations
+        self.buildConfigsToBuild = []
+        if not configNames or len(configNames) == 0: 
+            configNames = [self.buildInfo['defaultconfig']]  #default
+        for configName in configNames:
+            configDicts = [d for d in self.buildInfo['configs'] if d['name'] == configName]
+            if len(configDicts) != 1: 
+                raise Exception, 'Invalid configuration %s' % (configName)
+            configDict = configDicts[0]
+            flattenedConfigDict = self.flattenConfigInheritance(configDict)
+            logging.debug('Flattened config dict for %s: %s' % (configDict['name'], str(flattenedConfigDict)))
+            buildConfig = BuildConfig(flattenedConfigDict, self.projectRoot)
+            self.buildConfigsToBuild.append(buildConfig)
+               
+        # Setup targets
+        self.currentTarget = None
+        self.allTargets = []
+        self.targetsToBuild = []
+        if not targetNames or len(targetNames) == 0: 
+            targetNames = [t['name'] for t in self.buildInfo['targets']]  # use all
+        for targetDict in self.buildInfo['targets']:
+            target = Target(targetDict, ExpandShellArgs(self.buildInfo['builddir']), self.projectRoot,
+                self.buildInfo.get('firstbuildfunc') )
+            self.allTargets.append(target)
+            if targetDict['name'] in targetNames:
+                self.targetsToBuild.append(target)
+        for target in self.allTargets:
+            target.updateTargetDependencies(self.allTargets)
+                
+    def flattenConfigInheritance(self, configDict):        
+        import copy
+        
+        def recursiveUpdate(dictToUpdate, dictToUpdateWith):
+            "Recursively update a tree of dictionaries"
+            for key,value in dictToUpdateWith.iteritems():
+                if key in dictToUpdate and isinstance(value, dict):
+                    recursiveUpdate(dictToUpdate[key], dictToUpdateWith[key]) 
+                else:
+                    dictToUpdate[key] = copy.deepcopy(value)
+                
+        def inheritFromDict(inheritingDict, resultDict):
+            "Inherit the contents of one dictionary in another"
+            if 'inherits' in inheritingDict:
+                configName = inheritingDict['inherits']
+                inheritedDict = [d for d in self.buildInfo['configs'] if d['name'] == configName][0]
+                inheritFromDict(inheritedDict, resultDict)
+            recursiveUpdate(resultDict, inheritingDict)
+            
+        flattenedDict = {}
+        inheritFromDict(configDict, flattenedDict)
+        return flattenedDict
+                
+    def build(self):
+        import pprint, pickle
+        
+        # read old fileMetaData
+        fileMetaDataFilePath = os.path.join(ExpandShellArgs(self.buildInfo['builddir']), 'foray.fileMetaData')
+        allFileMetaData = None
+        if os.path.exists(fileMetaDataFilePath):
+            f = open(fileMetaDataFilePath, 'rb')
+            allFileMetaData = pickle.load(f)
+            f.close()
+        if not allFileMetaData:
+            allFileMetaData = {}
+            
+        # Build each combination of target and config
+        success = True
+        allTargetsDict = dict([(target.name(), target) for target in self.allTargets])
+        for config in self.buildConfigsToBuild:
+            
+            if 'prepareconfigfunc' in self.buildInfo:
+                self.buildInfo['prepareconfigfunc'](config.name())
+
+            for target in self.targetsToBuild:
+                self.currentTarget = target
+                success, numFilesBuilt = target.build(config, allFileMetaData, self.clean, self.numThreads, 
+                    self.noDependencies)
+                if numFilesBuilt > 0:
+                    print 'Storing file meta data'
+                    if self.debug:
+                        f = open(fileMetaDataFilePath + '.debug', 'w')
+                        pprint.pprint(allFileMetaData, f)
+                        f.close()
+                    f = open(fileMetaDataFilePath, 'wb')
+                    pickle.dump(allFileMetaData, f)
+                    f.close()
+                if not success: break
+            if not success: break
+        self.currentTarget = None
+        return success
+        
+    def install(self):
+        "Installs the target products in the respective bin directories."
+        for t in self.targetsToBuild:
+            for b in self.buildConfigsToBuild:
+                t.install(b)
+            
+    def handleStopSignal(self, signalNum, frame):
+        self.buildCancelled = True
+        if self.currentTarget: self.currentTarget.stopBuild()
+            
+# -----------------
+# Main program
+# -----------------
+
+# Read environment variables
+numThreads = os.environ.setdefault('FORAY_NUM_THREADS', '1')
+
+# Parse input arguments
+from optparse import OptionParser
+parser = OptionParser()
+parser.add_option("-d", "--debug", action="store_true", dest="debug", help="Print debug info.", 
+    default=False)
+parser.add_option("-c", "--clean", action="store_true", dest="clean", help="Whether to rebuild completely.", 
+    default=False)
+parser.add_option("-j", "--threads", type="int", dest="numthreads", help="The number of threads to use.", 
+    default=int(numThreads))
+parser.add_option("-i", "--buildinfo", type="string", dest="buildinfofile", help="The build info file name.", 
+    default='buildinfo')
+parser.add_option("-b", "--buildconfig", type="string", action="append", dest="configs", 
+    help="The configuration to build.")
+parser.add_option("-n", "--nodepends", action="store_true", dest="nodepends", help="Do not account for file dependencies.", 
+    default=False)
+(options, targets) = parser.parse_args()
+
+# Debugging
+if options.debug: logging.getLogger('').setLevel(logging.DEBUG)
+
+# Build info
+import signal
+buildinfoGlobals = {}
+execfile(options.buildinfofile, buildinfoGlobals)
+buildInfo = buildinfoGlobals['buildinfo']
+
+# File types
+FortranSourceFile.configure(buildInfo.get('fortranfiles'))
+CSourceFile.configure(buildInfo.get('cfiles'))
+
+# Project root
+if 'projectroot' in buildInfo:
+    projectRoot = ExpandShellArgs(buildInfo['projectroot'])
+else:
+    projectRoot = os.getcwd()
+os.environ['FORAY_PROJECT_ROOT'] = projectRoot
+
+# Create builder and build
+builder = Builder(buildInfo, targets, options.configs, projectRoot, options.numthreads, 
+    options.clean, options.nodepends, options.debug)
+signal.signal(signal.SIGINT, builder.handleStopSignal)
+signal.signal(signal.SIGQUIT, builder.handleStopSignal)
+signal.signal(signal.SIGABRT, builder.handleStopSignal)
+if options.debug:
+    if builder.build(): builder.install()
+else:
+    try:
+        if builder.build():
+            builder.install()
+    except Exception, e:
+        print 'Foray Error: ' + str(e.args[0])
+
+
+# ------------------------------------------------------------------------------------
+# Copyright (c) 2008, Drew McCormack
+# 
+# All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without modification, 
+# are permitted provided that the following conditions are met:
+# 
+# Redistributions of source code must retain the above copyright notice, 
+# this list of conditions and the following disclaimer.
+# Redistributions in binary form must reproduce the above copyright notice, 
+# this list of conditions and the following disclaimer in the documentation and/or 
+# other materials provided with the distribution.
+# Neither the name of the Vrije Universiteit (Amsterdam) nor the names of its 
+# contributors may be used to endorse or promote products derived from this software 
+# without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.=======
+
