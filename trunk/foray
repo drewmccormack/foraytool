@@ -226,6 +226,7 @@ class SourceFile:
             else:
                 self._buildFailed = True
         else:
+            print 'Preprocessing %s failed' % (self.fileName())
             self._buildFailed = True
         return not self._buildFailed
         
