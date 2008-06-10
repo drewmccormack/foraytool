@@ -53,7 +53,19 @@ def RunSubprocess(command):
         elif process.returncode > 0:
             success = False
     return (success, output, error)
-
+    
+def FindFileInAncestorDirs(dir, filename):
+    import os.path
+    ancestor = dir
+    resultPath = None
+    while os.path.exists(ancestor): 
+        filepath = os.path.join(ancestor, filename)
+        if os.path.isfile(filepath):
+            resultPath = filepath
+            break
+        ancestor = os.path.dirname(ancestor).rstrip(os.sep)
+    return resultPath
+    
 # ---------
 # Classes
 # ---------
@@ -226,7 +238,6 @@ class SourceFile:
             else:
                 self._buildFailed = True
         else:
-            print 'Preprocessing %s failed' % (self.fileName())
             self._buildFailed = True
         return not self._buildFailed
         
@@ -492,13 +503,15 @@ class CSourceFile (SourceFile):
         
 class SourceTree:
     def __init__(self, rootDirs, sourceTreesDependedOn, projectRoot, skipdirs, skipfiles, 
-        mainProgramFile = None, noDependencies = False):
+        mainProgramFile = None, noDependencies = False, 
+        includeKeywords = [r'use\s+', r'module\s+', r'\*copy\s+', r'include\s*[\'\"]', r'\#include\s*[\'\"]']):
         self.rootDirs= rootDirs
         self.projectRoot = projectRoot
         self.skipfiles = set(skipfiles)
         self.skipdirs = set(skipdirs)
         self.mainProgramFile = mainProgramFile
-        self.moduleUseRegEx = re.compile(r'^\s*(use|module|\*copy)\s+([\d\w_]+)', re.IGNORECASE | re.MULTILINE)
+        regExStr = r'^\s*(%s)([\d\w_]+)' % (string.join(includeKeywords,'|'),) 
+        self.moduleUseRegEx = re.compile(regExStr, re.IGNORECASE | re.MULTILINE)
         self.sourceTreesDependedOn = sourceTreesDependedOn
         self.noDependencies = noDependencies
         self.sourceFiles = self.createSourceFiles()     
@@ -626,12 +639,12 @@ class SourceTree:
         f.close()
         matches = self.moduleUseRegEx.findall(fileContent)
         for m in matches:
-            if m[0].lower() == 'use':
+            if m[0].lower().strip() == 'use':
                 usedModules.add(m[1].lower())
-            elif m[0].lower() == '*copy':
-                includedFiles.add(m[1].lower())
-            else:
+            elif m[0].lower().strip() == 'module':
                 containedModules.add(m[1].lower())
+            else:
+                includedFiles.add(m[1])
         return list(usedModules), list(containedModules), list(includedFiles)
         
     def setupFortranDependencies(self, fortranSourceFiles):
@@ -655,13 +668,15 @@ class SourceTree:
                         if fileWithUsedMod: break
                 if fileWithUsedMod and f != fileWithUsedMod: f.addDirectDependency(fileWithUsedMod)
             for includeFile in includedFilesDict[f]:
-                includeFileName = includeFile + '.fh'
-                includedSourceFiles = [ifile for ifile in fortranSourceFiles if \
-                    ifile.fileName().lower() == includeFileName.lower()]
-                if len(includedSourceFiles) == 1: 
-                    f.addDirectDependency(includedSourceFiles[0])
-                else:
-                    raise Exception, 'Could not find include file %s' % (includeFileName)
+                found = False
+                for sourceFile in fortranSourceFiles:
+                    base, ext = os.path.splitext(sourceFile.fileName())
+                    if (sourceFile.fileName() == includeFile) or (base == includeFile):
+                        f.addDirectDependency(sourceFile)
+                        found = True
+                        break
+                if not found:
+                    raise Exception, 'Could not find include file %s from %s' % (includeFile, f.fileName())
                 
         # Check for cycles
         print 'Checking for cyclic dependencies'
@@ -1242,7 +1257,12 @@ if options.debug: logging.getLogger('').setLevel(logging.DEBUG)
 # Build info
 import signal
 buildinfoGlobals = {}
-execfile(options.buildinfofile, buildinfoGlobals)
+buildinfoPath = FindFileInAncestorDirs(os.getcwd(), options.buildinfofile)
+if not buildinfoPath: 
+    sys.exit('Could not locate buildinfo file')
+execfile(buildinfoPath, buildinfoGlobals)
+if 'buildinfo' not in buildinfoGlobals: 
+    sys.exit('No buildinfo dict found in buildinfo file')
 buildInfo = buildinfoGlobals['buildinfo']
 
 # File types
@@ -1253,7 +1273,7 @@ CSourceFile.configure(buildInfo.get('cfiles'))
 if 'projectroot' in buildInfo:
     projectRoot = ExpandShellArgs(buildInfo['projectroot'])
 else:
-    projectRoot = os.getcwd()
+    projectRoot = os.path.dirname(buildinfoPath)
 os.environ['FORAY_PROJECT_ROOT'] = projectRoot
 
 # Create builder and build
