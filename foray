@@ -236,8 +236,10 @@ class SourceFile:
                 self.setBuildChecksum(self.checksum())
                 self.setBuildCompileCommand(self.compileCommand())
             else:
+                print 'Failed to compile %s' % (self.fileName())
                 self._buildFailed = True
         else:
+            print 'Failed to preprocess %s' % (self.fileName())
             self._buildFailed = True
         return not self._buildFailed
         
