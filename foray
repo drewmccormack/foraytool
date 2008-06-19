@@ -655,12 +655,15 @@ class SourceTree:
         self.containedModsDict = {}
         usedModsDict = {}
         includedFilesDict = {}
+        
         for f in fortranSourceFiles:
             usedMods, containedMods, includedFiles = self.scanFileForModules(f.path())
             usedModsDict[f] = usedMods
             includedFilesDict[f] = includedFiles
             for m in containedMods:
                 self.containedModsDict[m] = f
+                
+        fileBases = [os.path.splitext(f.fileName())[0] for f in fortranSourceFiles]
         for f in fortranSourceFiles:
             for usedMod in usedModsDict[f]:
                 fileWithUsedMod = self.containedModsDict.get(usedMod)
@@ -672,8 +675,7 @@ class SourceTree:
                 if fileWithUsedMod and f != fileWithUsedMod: f.addDirectDependency(fileWithUsedMod)
             for includeFile in includedFilesDict[f]:
                 found = False
-                for sourceFile in fortranSourceFiles:
-                    base, ext = os.path.splitext(sourceFile.fileName())
+                for sourceFile, base in zip(fortranSourceFiles, fileBases):
                     if (sourceFile.fileName() == includeFile) or (base == includeFile):
                         f.addDirectDependency(sourceFile)
                         found = True
