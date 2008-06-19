@@ -75,6 +75,7 @@ class SourceFile:
     
     def __init__(self, path, projectRoot):
         self._path = path
+        self._fileName = os.path.basename(path)
         self._directDependencies = []
         self._isMainProgram = False
         self._projectRoot = projectRoot
@@ -124,7 +125,7 @@ class SourceFile:
         return self._path
         
     def fileName(self):
-        return os.path.basename(self._path)
+        return self._fileName
         
     def absolutePath(self):
         return os.path.join(self._projectRoot, self.path())
