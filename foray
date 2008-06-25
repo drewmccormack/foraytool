@@ -97,22 +97,29 @@ class SourceFile:
         self._buildCompileCommand = None
         self._lastChecksum = None
         self._buildChecksum = None
+        self._usedModules = None
+        self._containedModules = None
+        self._includeFileNames = None
         
     def updateWithMetadata(self, metadata):
         "Metadata is a tuple that is used for persisting the file to disk."
         if metadata:
-            timestamp, compileCommand, checksum = metadata
+            timestamp, compileCommand, checksum, usedMods, containedMods, includeFiles = metadata
             self.setLastBuilt(timestamp)
             self.setBuildTime(timestamp)
             self.setLastCompileCommand(compileCommand)
             self.setBuildCompileCommand(compileCommand)
             self.setLastChecksum(checksum)
             self.setBuildChecksum(checksum)
+            self.setUsedModules(usedMods)
+            self.setConstainedModules(containedMods)
+            self.setIncludedFileNames(includeFiles)
         else:  # Reset
             self.resetBuildMetadata()
                 
     def metadata(self):
-        return (self.buildTime(), self.buildCompileCommand(), self.buildChecksum())
+        return (self.buildTime(), self.buildCompileCommand(), self.buildChecksum(), 
+            self.usedModules(), self.containedModules(), self.includedFileNames())
         
     def requiresPreprocessing(self):
         return False
@@ -136,6 +143,24 @@ class SourceFile:
     def objectFileName(self):
         pathWithoutExt = os.path.splitext(self.path())[0]
         return os.path.basename(pathWithoutExt) + '.o'
+        
+    def usedModules(self):
+        return self._usedModules
+        
+    def setUsedModules(self, usedMods):
+        self._usedModules = usedMods
+        
+    def containedModules(self):
+        return self._containedModules
+        
+    def setConstainedModules(self, mods):
+        self._containedModules = mods
+        
+    def includedFileNames(self):
+        return self._includeFileNames
+        
+    def setIncludedFileNames(self, names):
+        self._includeFileNames = names
         
     def setBuildConfig(self, config):
         import weakref
@@ -657,7 +682,12 @@ class SourceTree:
         includedFilesDict = {}
         
         for f in fortranSourceFiles:
-            usedMods, containedMods, includedFiles = self.scanFileForModules(f.path())
+            usedMods, containedMods, includedFiles = f.usedModules(), f.containedModules(), f.includedFileNames()
+            if not usedMods or f.isModified():
+                usedMods, containedMods, includedFiles = self.scanFileForModules(f.path())
+                f.setUsedModules(usedMods)
+                f.setConstainedModules(containedMods)
+                f.setIncludedFileNames(includedFiles)
             usedModsDict[f] = usedMods
             includedFilesDict[f] = includedFiles
             for m in containedMods:
