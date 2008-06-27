@@ -597,25 +597,22 @@ class SourceTree:
         system.
         """
         sourceFiles = []
-        def addFiles(regExString, sourceFileClass):
-            if not regExString: return
+        def addFiles(regExStrings, sourceFileClasses):
             for rootDir in self.rootDirs:
-                files = self.locateFiles(regExString, rootDir, True)
-                for path, modDate, checksum in files:
-                    newFile = sourceFileClass(path, self.projectRoot)
-                    newFile.updateWithMetadata(self.metadata.setdefault(newFile.path(), {}).get('configindep'))
-                    newFile.setLastModified(modDate)
-                    newFile.setChecksum(checksum)
-                    if os.path.basename(path) == self.mainProgramFile:
-                        newFile.setIsMainProgram(True)
-                    sourceFiles.append(newFile)
+                listOfFileLists = self.locateFiles(regExStrings, rootDir, True)
+                for files, sourceFileClass in zip(listOfFileLists, sourceFileClasses):
+                    for path, modDate, checksum in files:
+                        newFile = sourceFileClass(path, self.projectRoot)
+                        newFile.updateWithMetadata(self.metadata.setdefault(newFile.path(), {}).get('configindep'))
+                        newFile.setLastModified(modDate)
+                        newFile.setChecksum(checksum)
+                        if os.path.basename(path) == self.mainProgramFile:
+                            newFile.setIsMainProgram(True)
+                        sourceFiles.append(newFile)
         logging.debug('Searching for fortran source files')
-        for regEx in FortranSourceFile.allFileRegExs():
-            addFiles(regEx, FortranSourceFile)
+        addFiles([FortranSourceFile.allFileRegExs()], [FortranSourceFile])
         if not self.noDependencies: self.setupFortranDependencies(sourceFiles)
-        logging.debug('Searching for c source files')
-        for regEx in CSourceFile.allFileRegExs():
-            addFiles(regEx, CSourceFile)
+        addFiles([CSourceFile.allFileRegExs()], [CSourceFile])
         return sourceFiles
         
     def createSourceFileForPath(self, path):
@@ -628,9 +625,9 @@ class SourceTree:
         else:
             raise Exception, 'Unknown file type in sourceFileForPath'
         
-    def locateFiles(self, fileNameRegEx, rootDir, calcChecksum):
+    def locateFiles(self, fileNameRegExLists, rootDir, calcChecksum):
         """
-        Locates files matching reg ex passed. Returns list of tuples,
+        Locates files matching reg exs passed. Returns lists of lists of tuples,
         containing file path and modification date.
         """
         import md5
@@ -641,27 +638,31 @@ class SourceTree:
             return checksum
             
         logging.debug('locating files in directory %s' % (rootDir))
-        fileTuples = []
-        regEx = re.compile(fileNameRegEx)
+        listOfListOfRegExes = [[re.compile(regEx) for regEx in regExList] for regExList in fileNameRegExLists]
         os.chdir(self.projectRoot)
         checksum = None
+        listOfListOfFileTuples = [[] for r in listOfListOfRegExes]
         for root, dirs, files in os.walk(rootDir):
             for skipdir in self.skipdirs:
                 if skipdir in dirs: dirs.remove(skipdir)
             for f in files:
                 if os.path.basename(f) in self.skipfiles: continue
-                if regEx.match(f): 
-                    filePath = os.path.join(root,f)
-                    prefix = os.path.commonprefix([filePath, self.projectRoot])
-                    filePath = filePath[len(prefix):]
-                    if filePath[0] == os.sep: filePath = filePath[1:]
-                    if calcChecksum: checksum = genChecksum(filePath)
-                    fileTuples.append( (filePath, os.path.getmtime(filePath), checksum) )
-        return fileTuples
+                for listOfRegExs, listOfFileTuples in zip(listOfListOfRegExes, listOfListOfFileTuples):
+                    for regEx in listOfRegExs:
+                        if regEx.match(f): 
+                            filePath = os.path.join(root,f)
+                            prefix = os.path.commonprefix([filePath, self.projectRoot])
+                            filePath = filePath[len(prefix):]
+                            if filePath[0] == os.sep: filePath = filePath[1:]
+                            if calcChecksum: checksum = genChecksum(filePath)
+                            listOfFileTuples.append( (filePath, os.path.getmtime(filePath), checksum) )
+                            break
+        return listOfListOfFileTuples
         
     def updateMetadata(self):
         pathsToRemove = self.removedFiles()
-        for p in pathsToRemove: del self.metadata[p]
+        for p in pathsToRemove: 
+            del self.metadata[p]
         for f in self.sourceFiles: self.metadata[f.path()]['configindep'] = f.metadata()
         
     def prepareForNewBuildCombo(self, buildConfig, target, clean):
@@ -899,7 +900,6 @@ class Target:
                 self.isBuilt = self.compileExecutable(buildConfig)
                 if not self.isBuilt:
                     print 'Failed to link executable for target %s' % (self.name())
-        self.updateMetadata()
         return self.isBuilt, numFilesBuilt
         
     def install(self, buildConfig):
@@ -947,6 +947,7 @@ class Target:
                 self.targetInfoDict['skipfiles'],
                 mainProgramFile,
                 noDependencies)
+            self.updateMetadata()
         self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFiles())
         
         logging.debug('Updating file status')
