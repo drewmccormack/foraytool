@@ -82,13 +82,34 @@ class SourceFile:
         self._dependencyCyclesChecked = False
         self._buildConfig = None
         self._target = None
-        self.resetBuildMetadata()
         self._checksum = None
+        self.resetMetadata()
+        self.resetConfigDepMetadata()
         
-    def resetBuildMetadata(self):
+    def resetMetadata(self):
+        self._lastScan = None
+        self._lastScanChecksum = None
+        self._usedModules = None
+        self._containedModules = None
+        self._includeFileNames = None
+        
+    def updateWithMetadata(self, metadata):
+        self.resetMetadata()
+        if metadata:
+            lastScan, lastScanChecksum, usedMods, containedMods, includeFiles = metadata
+            self.setUsedModules(usedMods)
+            self.setConstainedModules(containedMods)
+            self.setIncludedFileNames(includeFiles)
+            self.setLastScan(lastScan)
+            self.setLastScanChecksum(lastScanChecksum)
+        
+    def metadata(self):
+        return (self.lastScan(), self.lastScanChecksum(), self.usedModules(), 
+            self.containedModules(), self.includedFileNames())
+        
+    def resetConfigDepMetadata(self):
         self._lastBuilt = None
         self._mostRecentBuildOfDependency = None
-        self._lastModified = None
         self._buildTime = None
         self._buildFailed = False
         self._markedForBuilding = False
@@ -97,29 +118,21 @@ class SourceFile:
         self._buildCompileCommand = None
         self._lastChecksum = None
         self._buildChecksum = None
-        self._usedModules = None
-        self._containedModules = None
-        self._includeFileNames = None
         
-    def updateWithMetadata(self, metadata):
+    def updateWithConfigDepMetadata(self, metadata):
         "Metadata is a tuple that is used for persisting the file to disk."
+        self.resetConfigDepMetadata()
         if metadata:
-            timestamp, compileCommand, checksum, usedMods, containedMods, includeFiles = metadata
+            timestamp, compileCommand, checksum = metadata
             self.setLastBuilt(timestamp)
             self.setBuildTime(timestamp)
             self.setLastCompileCommand(compileCommand)
             self.setBuildCompileCommand(compileCommand)
             self.setLastChecksum(checksum)
             self.setBuildChecksum(checksum)
-            self.setUsedModules(usedMods)
-            self.setConstainedModules(containedMods)
-            self.setIncludedFileNames(includeFiles)
-        else:  # Reset
-            self.resetBuildMetadata()
                 
-    def metadata(self):
-        return (self.buildTime(), self.buildCompileCommand(), self.buildChecksum(), 
-            self.usedModules(), self.containedModules(), self.includedFileNames())
+    def configDepMetadata(self):
+        return (self.buildTime(), self.buildCompileCommand(), self.buildChecksum())
         
     def requiresPreprocessing(self):
         return False
@@ -143,6 +156,24 @@ class SourceFile:
     def objectFileName(self):
         pathWithoutExt = os.path.splitext(self.path())[0]
         return os.path.basename(pathWithoutExt) + '.o'
+        
+    def lastScanChecksum(self):
+        return self._lastScanChecksum
+        
+    def setLastScanChecksum(self, last):
+        self._lastScanChecksum = last
+        
+    def lastScan(self):
+        return self._lastScan
+        
+    def setLastScan(self, last):
+        self._lastScan = last
+        
+    def needsRescan(self):
+        if not self._lastScan: 
+            return True
+        else:
+            return (self._lastScan < self._lastModified) or (self._lastScanChecksum != self._checksum)
         
     def usedModules(self):
         return self._usedModules
@@ -388,9 +419,10 @@ class SourceFile:
             f = self.preprocessFuncs['preprocessorFunction']
             return f(self.absolutePath(), self.target().intermediateProductsDirectory(self.buildConfig()))
         else:
-            # Copy the source file
+            # Hard link to the source file
             preprocessedPath = self.preprocessedFilePath()
-            shutil.copy(self.absolutePath(), preprocessedPath)
+            if os.path.exists(preprocessedPath): os.remove(preprocessedPath)
+            os.link(self.absolutePath(), preprocessedPath)
             return True
         
     TreeStringIndentLevel = 4
@@ -530,13 +562,14 @@ class CSourceFile (SourceFile):
             
         
 class SourceTree:
-    def __init__(self, rootDirs, sourceTreesDependedOn, projectRoot, skipdirs, skipfiles, 
-        mainProgramFile = None, noDependencies = False, 
+    def __init__(self, rootDirs, sourceTreesDependedOn, metadata, projectRoot, skipdirs, skipfiles, 
+        mainProgramFile = None, noDependencies = False,
         includeKeywords = [r'use\s+', r'module\s+', r'\*copy\s+', r'include\s*[\'\"]', r'\#include\s*[\'\"]']):
         self.rootDirs= rootDirs
         self.projectRoot = projectRoot
         self.skipfiles = set(skipfiles)
         self.skipdirs = set(skipdirs)
+        self.metadata = metadata
         self.mainProgramFile = mainProgramFile
         regExStr = r'^\s*(%s)([\d\w_]+)' % (string.join(includeKeywords,'|'),) 
         self.moduleUseRegEx = re.compile(regExStr, re.IGNORECASE | re.MULTILINE)
@@ -567,9 +600,10 @@ class SourceTree:
         def addFiles(regExString, sourceFileClass):
             if not regExString: return
             for rootDir in self.rootDirs:
-                files = self.locateFiles(regExString, rootDir)
+                files = self.locateFiles(regExString, rootDir, True)
                 for path, modDate, checksum in files:
                     newFile = sourceFileClass(path, self.projectRoot)
+                    newFile.updateWithMetadata(self.metadata.setdefault(newFile.path(), {}).get('configindep'))
                     newFile.setLastModified(modDate)
                     newFile.setChecksum(checksum)
                     if os.path.basename(path) == self.mainProgramFile:
@@ -594,16 +628,23 @@ class SourceTree:
         else:
             raise Exception, 'Unknown file type in sourceFileForPath'
         
-    def locateFiles(self, fileNameRegEx, rootDir):
+    def locateFiles(self, fileNameRegEx, rootDir, calcChecksum):
         """
         Locates files matching reg ex passed. Returns list of tuples,
         containing file path and modification date.
         """
         import md5
+        def genChecksum(filePath):
+            fl = open(filePath,'r')
+            checksum = md5.new(fl.read()).digest()
+            fl.close()
+            return checksum
+            
         logging.debug('locating files in directory %s' % (rootDir))
         fileTuples = []
         regEx = re.compile(fileNameRegEx)
         os.chdir(self.projectRoot)
+        checksum = None
         for root, dirs, files in os.walk(rootDir):
             for skipdir in self.skipdirs:
                 if skipdir in dirs: dirs.remove(skipdir)
@@ -614,30 +655,34 @@ class SourceTree:
                     prefix = os.path.commonprefix([filePath, self.projectRoot])
                     filePath = filePath[len(prefix):]
                     if filePath[0] == os.sep: filePath = filePath[1:]
-                    fl = open(filePath,'r')
-                    checksum = md5.new(fl.read()).digest()
-                    fl.close()
+                    if calcChecksum: checksum = genChecksum(filePath)
                     fileTuples.append( (filePath, os.path.getmtime(filePath), checksum) )
         return fileTuples
         
-    def updateFileStatus(self, fileMetaData, buildConfig, target):
+    def updateMetadata(self):
+        pathsToRemove = self.removedFiles()
+        for p in pathsToRemove: del self.metadata[p]
+        for f in self.sourceFiles: self.metadata[f.path()]['configindep'] = f.metadata()
+        
+    def prepareForNewBuildCombo(self, buildConfig, target, clean):
         logging.debug('Updating file status')
         for f in self.sourceFiles:
             f.setTarget(target)
             f.setBuildConfig(buildConfig)
-            metadata = fileMetaData.get(f.path())
-            f.updateWithMetadata(metadata)
+            metadata = None
+            if not clean: metadata = self.metadata.get(f.path())
+            if metadata: metadata = metadata.setdefault('configdep', {}).get(buildConfig.name())
+            f.updateWithConfigDepMetadata(metadata)
 
-    def updateFileMetaData(self, fileMetaData):
+    def updateConfigDependMetadata(self, buildConfig):
         logging.debug('Updating file metadata')
         for f in self.sourceFiles:
-            fileMetaData[f.path()] = f.metadata()
-        pathsToRemove = self.removedFiles(fileMetaData)
-        for p in pathsToRemove: del fileMetaData[p]
+            configsDict = self.metadata.setdefault(f.path(), {}).setdefault('configdep', {})
+            configsDict[buildConfig.name()] = f.configDepMetadata()
                 
-    def removedFiles(self, fileMetaData):
+    def removedFiles(self):
         "Returns set of files removed since last build. Paths are project root relative."
-        timestampPaths =  set(fileMetaData.keys())
+        timestampPaths =  set(self.metadata.keys())
         sourceFilePaths = set([f.path() for f in self.sourceFiles])
         pathsRemoved = timestampPaths.difference(sourceFilePaths)
         return pathsRemoved
@@ -681,13 +726,17 @@ class SourceTree:
         usedModsDict = {}
         includedFilesDict = {}
         
+        scanTime = time.time()
         for f in fortranSourceFiles:
-            usedMods, containedMods, includedFiles = f.usedModules(), f.containedModules(), f.includedFileNames()
-            if not usedMods or f.isModified():
+            if f.needsRescan():
                 usedMods, containedMods, includedFiles = self.scanFileForModules(f.path())
                 f.setUsedModules(usedMods)
                 f.setConstainedModules(containedMods)
                 f.setIncludedFileNames(includedFiles)
+                f.setLastScan(scanTime)
+                f.setLastScanChecksum(f.checksum())
+            else:
+                usedMods, containedMods, includedFiles = f.usedModules(), f.containedModules(), f.includedFileNames()
             usedModsDict[f] = usedMods
             includedFilesDict[f] = includedFiles
             for m in containedMods:
@@ -731,7 +780,7 @@ class SourceTree:
             
      
 class Target:
-    def __init__(self, targetInfoDict, buildRootDir, projectRoot, setupFunc = None):    
+    def __init__(self, targetInfoDict, buildRootDir, projectRoot, metadata, setupFunc = None):    
         self.targetInfoDict = targetInfoDict    
         self.isBuilt = False
         self.lastConfig = None
@@ -741,6 +790,7 @@ class Target:
         self.buildShouldStop = False
         self.buildQueue = None
         self.projectRoot = projectRoot
+        self.metadata = metadata
         self.setupFuncTuple = (setupFunc,)  # Using a tuple to avoid binding function to class
         
     def mainProgramFile(self):
@@ -820,10 +870,13 @@ class Target:
             target = [t for t in allTargets if t.name() == targetName][0]
             self.targetDependencies.append(target)
             
+    def updateMetadata(self):
+        if self._sourceTree: self._sourceTree.updateMetadata()
+            
     def isFirstBuild(self, buildConfig):
         return os.path.exists(self.intermediateProductsDirectory(buildConfig))
             
-    def build(self, buildConfig, allFileMetaData, clean, numThreads = 1, noDependencies = False):
+    def build(self, buildConfig, clean, numThreads = 1, noDependencies = False):
         if self.isBuilt and self.lastConfig == buildConfig: return True, 0
         self.isBuilt = False
         self.lastConfig = buildConfig
@@ -835,19 +888,18 @@ class Target:
         numFilesBuilt = 0
         for t in self.targetDependencies:
             logging.debug('Building dependency target %s' % (t.name()))
-            dependenciesBuilt, n = t.build(buildConfig, allFileMetaData, clean, numThreads, noDependencies)
+            dependenciesBuilt, n = t.build(buildConfig, clean, numThreads, noDependencies)
             numFilesBuilt += n
             if not dependenciesBuilt: break
-        fileMetaData = allFileMetaData.setdefault(buildConfig.name(),{}).setdefault(self.name(),{})
-        if clean: fileMetaData.clear()
         if dependenciesBuilt and not self.buildShouldStop:
             self.setBuildEnvironment(buildConfig)
-            self.isBuilt, n = self.compileSources(buildConfig, fileMetaData, numThreads, noDependencies)
+            self.isBuilt, n = self.compileSources(buildConfig, numThreads, clean, noDependencies)
             numFilesBuilt += n
             if self.isBuilt and 'exename' in self.targetInfoDict: 
                 self.isBuilt = self.compileExecutable(buildConfig)
                 if not self.isBuilt:
                     print 'Failed to link executable for target %s' % (self.name())
+        self.updateMetadata()
         return self.isBuilt, numFilesBuilt
         
     def install(self, buildConfig):
@@ -873,7 +925,7 @@ class Target:
         os.environ['FORAY_EXECUTABLE_PRODUCTS_DIR'] = self.productExecutableDirectory(buildConfig)
         os.environ['FORAY_INSTALL_DIR'] = self.productInstallDirectory(buildConfig)
             
-    def compileSources(self, buildConfig, fileMetaData, numThreads, noDependencies):
+    def compileSources(self, buildConfig, numThreads, clean, noDependencies):
         print 'Starting build for target "%s" with config "%s"' % (self.name(), buildConfig.name())
         libDirPath = self.productLibraryDirectory(buildConfig)
         if not os.path.exists(libDirPath): 
@@ -889,14 +941,16 @@ class Target:
             mainProgramFile = self.targetInfoDict.get('mainprogramfile')
             self._sourceTree = SourceTree(self.rootSourceDirectories(), 
                 [t.sourceTree() for t in self.targetDependencies],
+                self.metadata,
                 self.projectRoot, 
                 self.targetInfoDict['skipdirs'],
                 self.targetInfoDict['skipfiles'],
                 mainProgramFile,
                 noDependencies)
-        self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFiles(fileMetaData))
+        self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFiles())
+        
         logging.debug('Updating file status')
-        self._sourceTree.updateFileStatus(fileMetaData, buildConfig, self)
+        self._sourceTree.prepareForNewBuildCombo(buildConfig, self, clean)
         libFilePath = os.path.join(self.productLibraryDirectory(buildConfig), self.fullLibraryName())
         self.buildQueue = BuildQueue(self._sourceTree, buildConfig, self, libFilePath, numThreads)
         success = False
@@ -913,7 +967,7 @@ class Target:
                     print output
                     print error
         self.buildQueue = None
-        self._sourceTree.updateFileMetaData(fileMetaData)
+        self._sourceTree.updateConfigDependMetadata(buildConfig)
         if success:
             statusString = 'Compiled library'
         elif self.buildShouldStop:
@@ -1160,11 +1214,21 @@ class Builder:
         self.noDependencies = noDependencies
         self.buildCancelled = False
         self.debug = debug
+        
+        # read old metadata
+        import cPickle
+        metadataFilePath = self.metadataFilePath()
+        self.allFileMetadata = None
+        if os.path.exists(metadataFilePath):
+            f = open(metadataFilePath, 'rb')
+            self.allFileMetadata = cPickle.load(f)
+            f.close()
+        if not self.allFileMetadata: self.allFileMetadata = {}
                 
         # Setup build configurations
         self.buildConfigsToBuild = []
         if not configNames or len(configNames) == 0: 
-            configNames = [self.buildInfo['defaultconfig']]  #default
+            configNames = [self.buildInfo['defaultconfig']]  # default
         for configName in configNames:
             configDicts = [d for d in self.buildInfo['configs'] if d['name'] == configName]
             if len(configDicts) != 1: 
@@ -1182,8 +1246,9 @@ class Builder:
         if not targetNames or len(targetNames) == 0: 
             targetNames = [t['name'] for t in self.buildInfo['targets']]  # use all
         for targetDict in self.buildInfo['targets']:
+            targetMetadata = self.allFileMetadata.setdefault(targetDict['name'], {})
             target = Target(targetDict, ExpandShellArgs(self.buildInfo['builddir']), self.projectRoot,
-                self.buildInfo.get('firstbuildfunc') )
+                targetMetadata, self.buildInfo.get('firstbuildfunc') )
             self.allTargets.append(target)
             if targetDict['name'] in targetNames:
                 self.targetsToBuild.append(target)
@@ -1212,21 +1277,15 @@ class Builder:
         flattenedDict = {}
         inheritFromDict(configDict, flattenedDict)
         return flattenedDict
+        
+    def metadataFilePath(self):
+        return os.path.join(ExpandShellArgs(self.buildInfo['builddir']), 'build.foraymetadata')
                 
     def build(self):
-        import pprint, pickle
-        
-        # read old fileMetaData
-        fileMetaDataFilePath = os.path.join(ExpandShellArgs(self.buildInfo['builddir']), 'foray.fileMetaData')
-        allFileMetaData = None
-        if os.path.exists(fileMetaDataFilePath):
-            f = open(fileMetaDataFilePath, 'rb')
-            allFileMetaData = pickle.load(f)
-            f.close()
-        if not allFileMetaData:
-            allFileMetaData = {}
-            
+        import pprint, cPickle
+                    
         # Build each combination of target and config
+        allFileMetadata = self.allFileMetadata
         success = True
         allTargetsDict = dict([(target.name(), target) for target in self.allTargets])
         for config in self.buildConfigsToBuild:
@@ -1236,19 +1295,21 @@ class Builder:
 
             for target in self.targetsToBuild:
                 self.currentTarget = target
-                success, numFilesBuilt = target.build(config, allFileMetaData, self.clean, self.numThreads, 
-                    self.noDependencies)
-                if numFilesBuilt > 0:
-                    print 'Storing file meta data'
-                    if self.debug:
-                        f = open(fileMetaDataFilePath + '.debug', 'w')
-                        pprint.pprint(allFileMetaData, f)
-                        f.close()
-                    f = open(fileMetaDataFilePath, 'wb')
-                    pickle.dump(allFileMetaData, f)
-                    f.close()
+                success, numFilesBuilt = target.build(config, self.clean, self.numThreads, self.noDependencies)
                 if not success: break
+                
             if not success: break
+            
+        print 'Storing file meta data'
+        metadataFilePath = self.metadataFilePath()
+        if self.debug:
+            f = open(metadataFilePath + '.debug', 'w')
+            pprint.pprint(allFileMetadata, f)
+            f.close()
+        f = open(metadataFilePath, 'wb')
+        cPickle.dump(allFileMetadata, f)
+        f.close()
+            
         self.currentTarget = None
         return success
         
