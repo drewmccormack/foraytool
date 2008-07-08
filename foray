@@ -451,7 +451,7 @@ class FortranSourceFile (SourceFile):
     fixedFormRegEx = '.*\.f$'
     freeFormPreprocessRegEx = None
     fixedFormPreprocessRegEx = None
-    includeFileRegEx = None
+    includeFileRegEx = '.*\.(inc|fh)$'
     
     @classmethod
     def configure(cls, infoDict):
