@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 import os, os.path, sys, re, string, logging, subprocess
 import time, shutil, threading
 
@@ -83,6 +84,7 @@ class SourceFile:
         self._buildConfig = None
         self._target = None
         self._checksum = None
+        self._verboseOutput = False
         self.resetMetadata()
         self.resetConfigDepMetadata()
         
@@ -276,10 +278,18 @@ class SourceFile:
     def isMainProgram(self):
         return self._isMainProgram
         
+    def setVerboseOutput(self, verbose):
+        self._verboseOutput = verbose
+    
+    def verboseOutput(self):
+        return self._verboseOutput
+        
     def checksumOfFile(self):
-        import md5
+        import hashlib
         fl = open(self.absolutePath(),'r')
-        checksum = md5.new(fl.read()).digest()
+        m = hashlib.md5()
+        m.update(fl.read())
+        checksum = m.digest()
         fl.close()
         return checksum
             
@@ -307,6 +317,8 @@ class SourceFile:
         if compileCommand == None: return True
         PrintLock.acquire()
         print 'Compiling %s' % (self.path())
+        if self._verboseOutput: 
+            print '%s\n' % (compileCommand)
         logging.debug('Compile Command: %s' % (compileCommand))
         PrintLock.release()
         success, output, error = RunSubprocess(compileCommand + ' 2>&1')
@@ -563,7 +575,7 @@ class CSourceFile (SourceFile):
         
 class SourceTree:
     def __init__(self, rootDirs, sourceTreesDependedOn, metadata, projectRoot, skipdirs, skipfiles, 
-        mainProgramFile = None, noDependencies = False,
+        mainProgramFile = None, noDependencies = False, verboseOutput = False,
         includeKeywords = [r'use\s+', r'module\s+', r'\*copy\s+', r'include\s*[\'\"]', r'\#include\s*[\'\"]']):
         self.rootDirs= rootDirs
         self.projectRoot = projectRoot
@@ -575,6 +587,7 @@ class SourceTree:
         self.moduleUseRegEx = re.compile(regExStr, re.IGNORECASE | re.MULTILINE)
         self.sourceTreesDependedOn = sourceTreesDependedOn
         self.noDependencies = noDependencies
+        self.verboseOutput = verboseOutput
         self.sourceFiles = self.createSourceFiles()     
         
     def sourceFiles(self):
@@ -603,6 +616,7 @@ class SourceTree:
                 for files, sourceFileClass in zip(listOfFileLists, sourceFileClasses):
                     for path, modDate, checksum in files:
                         newFile = sourceFileClass(path, self.projectRoot)
+                        newFile.setVerboseOutput(self.verboseOutput)
                         newFile.updateWithMetadata(self.metadata.setdefault(newFile.path(), {}).get('configindep'))
                         newFile.setLastModified(modDate)
                         newFile.setChecksum(checksum)
@@ -618,22 +632,27 @@ class SourceTree:
     def createSourceFileForPath(self, path):
         "Factory method to create a SourceFile object for the path given."
         fileName = os.path.basename(path)
+        f = None
         if FortranSourceFile.fileNameMatchesType(fileName): 
-            return FortranSourceFile(path, self.projectRoot)
+            f = FortranSourceFile(path, self.projectRoot)
         elif CSourceFile.fileNameMatchesType(fileName): 
-            return CSourceFile(path, self.projectRoot)
+            f = CSourceFile(path, self.projectRoot)
         else:
             raise Exception, 'Unknown file type in sourceFileForPath'
+        f.setVerboseOutput(self.verboseOutput)
+        return f
         
     def locateFiles(self, fileNameRegExLists, rootDir, calcChecksum):
         """
         Locates files matching reg exs passed. Returns lists of lists of tuples,
         containing file path and modification date.
         """
-        import md5
+        import hashlib
         def genChecksum(filePath):
             fl = open(filePath,'r')
-            checksum = md5.new(fl.read()).digest()
+            m = hashlib.md5()
+            m.update(fl.read())
+            checksum = m.digest()
             fl.close()
             return checksum
             
@@ -779,9 +798,9 @@ class SourceTree:
     def __iter__(self):
         return iter(self.sourceFiles)
             
-     
+            
 class Target:
-    def __init__(self, targetInfoDict, buildRootDir, projectRoot, metadata, setupFunc = None):    
+    def __init__(self, targetInfoDict, buildRootDir, projectRoot, metadata, setupFunc = None, verboseOutput = False):    
         self.targetInfoDict = targetInfoDict    
         self.isBuilt = False
         self.lastConfig = None
@@ -792,6 +811,7 @@ class Target:
         self.buildQueue = None
         self.projectRoot = projectRoot
         self.metadata = metadata
+        self.verboseOutput = verboseOutput
         self.setupFuncTuple = (setupFunc,)  # Using a tuple to avoid binding function to class
         
     def mainProgramFile(self):
@@ -946,7 +966,8 @@ class Target:
                 self.targetInfoDict['skipdirs'],
                 self.targetInfoDict['skipfiles'],
                 mainProgramFile,
-                noDependencies)
+                noDependencies,
+                self.verboseOutput)
             self.updateMetadata()
         self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFiles())
         
@@ -1172,7 +1193,7 @@ class BuildQueue:
             print 'An error occurred: ', e
             self.buildShouldStop = True
                       
-    ArchiveThreshold = 30
+    ArchiveThreshold = 100
     def buildSource(self):
         import threading
         self.buildShouldStop = False
@@ -1205,7 +1226,7 @@ class BuildQueue:
  
     
 class Builder:
-    def __init__(self, buildInfo, targetNames, configNames, projectRoot, numThreads, clean, noDependencies, debug):    
+    def __init__(self, buildInfo, targetNames, configNames, projectRoot, numThreads, clean, noDependencies, debug, verbose):    
             
         # Store ivars
         self.buildInfo = buildInfo
@@ -1215,6 +1236,7 @@ class Builder:
         self.noDependencies = noDependencies
         self.buildCancelled = False
         self.debug = debug
+        self.verbose = verbose
         
         # read old metadata
         import cPickle
@@ -1249,7 +1271,7 @@ class Builder:
         for targetDict in self.buildInfo['targets']:
             targetMetadata = self.allFileMetadata.setdefault(targetDict['name'], {})
             target = Target(targetDict, ExpandShellArgs(self.buildInfo['builddir']), self.projectRoot,
-                targetMetadata, self.buildInfo.get('firstbuildfunc') )
+                targetMetadata, self.buildInfo.get('firstbuildfunc'), verboseOutput=verbose)
             self.allTargets.append(target)
             if targetDict['name'] in targetNames:
                 self.targetsToBuild.append(target)
@@ -1336,6 +1358,8 @@ from optparse import OptionParser
 parser = OptionParser()
 parser.add_option("-d", "--debug", action="store_true", dest="debug", help="Print debug info.", 
     default=False)
+parser.add_option("-v", "--verbose", action="store_true", dest="verbose", help="Print verbose output.", 
+    default=False)
 parser.add_option("-c", "--clean", action="store_true", dest="clean", help="Whether to rebuild completely.", 
     default=False)
 parser.add_option("-j", "--threads", type="int", dest="numthreads", help="The number of threads to use.", 
@@ -1375,7 +1399,7 @@ os.environ['FORAY_PROJECT_ROOT'] = projectRoot
 
 # Create builder and build
 builder = Builder(buildInfo, targets, options.configs, projectRoot, options.numthreads, 
-    options.clean, options.nodepends, options.debug)
+    options.clean, options.nodepends, options.debug, options.verbose)
 signal.signal(signal.SIGINT, builder.handleStopSignal)
 signal.signal(signal.SIGQUIT, builder.handleStopSignal)
 signal.signal(signal.SIGABRT, builder.handleStopSignal)
