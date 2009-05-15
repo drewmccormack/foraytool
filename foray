@@ -155,6 +155,9 @@ class SourceFile:
     def generatesObjectFile(self):
         return True
         
+    def generatesModuleFile(self):
+        return (len(self.containedModules()) > 0)
+        
     def objectFileName(self):
         pathWithoutExt = os.path.splitext(self.path())[0]
         return os.path.basename(pathWithoutExt) + '.o'
@@ -527,6 +530,13 @@ class FortranSourceFile (SourceFile):
             compileCommand = None
         return compileCommand
 
+    def moduleFilePaths(self):
+        filepaths = []
+        for m in self.containedModules() :
+            #FIXME: this works for gfortran and ifort,
+            #       but other fortran compilers might use other naming schemes for module files
+            filepaths.append(m.lower()+'.mod')
+        return filepaths
     
 class CSourceFile (SourceFile):
     
@@ -679,7 +689,7 @@ class SourceTree:
         return listOfListOfFileTuples
         
     def updateMetadata(self):
-        pathsToRemove = self.removedFiles()
+        pathsToRemove = self.removedFilePaths()
         for p in pathsToRemove: 
             del self.metadata[p]
         for f in self.sourceFiles: self.metadata[f.path()]['configindep'] = f.metadata()
@@ -700,13 +710,23 @@ class SourceTree:
             configsDict = self.metadata.setdefault(f.path(), {}).setdefault('configdep', {})
             configsDict[buildConfig.name()] = f.configDepMetadata()
                 
-    def removedFiles(self):
+    def removedFilePaths(self):
         "Returns set of files removed since last build. Paths are project root relative."
         timestampPaths =  set(self.metadata.keys())
         sourceFilePaths = set([f.path() for f in self.sourceFiles])
         pathsRemoved = timestampPaths.difference(sourceFilePaths)
         return pathsRemoved
         
+    def removedSourceFiles(self):
+        "Returns set of source files removed since last build."
+        pathsRemoved = self.removedFilePaths()
+        filesRemoved = []
+        for p in pathsRemoved :
+            f = self.createSourceFileForPath(p)
+            f.updateWithMetadata(self.metadata[p].get('configindep'))
+            filesRemoved.append(f)
+        return filesRemoved
+            
     def buildableSourceFiles(self):
         """
         Returns a list of source files that need building, and for
@@ -968,8 +988,10 @@ class Target:
                 mainProgramFile,
                 noDependencies,
                 self.verboseOutput)
-            self.updateMetadata()
-        self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFiles())
+        self.unarchiveBuildProducts(buildConfig, self._sourceTree.removedFilePaths())
+        self.removeModuleFiles(buildConfig, self._sourceTree.removedSourceFiles())
+
+        self.updateMetadata()
         
         logging.debug('Updating file status')
         self._sourceTree.prepareForNewBuildCombo(buildConfig, self, clean)
@@ -1037,6 +1059,20 @@ class Target:
             if not success: 
                 if output: print output
                 if error: print error    
+                    
+    def removeModuleFiles(self, buildConfig, removedSourceFiles):
+        "Removes module files for the given source files."
+        sourceFiles = [f for f in removedSourceFiles if f.generatesModuleFile()]
+        if len(sourceFiles) == 0: return
+        print 'Removing module files for which source files no longer exist'
+        moduleFiles = []
+        for f in sourceFiles :
+            moduleFiles.extend(f.moduleFilePaths())
+        for f in moduleFiles :
+            fn = os.path.join(self.intermediateProductsDirectory(buildConfig), f)
+            print self.buildRootDir
+            if os.path.exists(fn) :
+                os.remove(fn)
                     
 class BuildConfig:
     def __init__(self, configDict, projectRoot):
