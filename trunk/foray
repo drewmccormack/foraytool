@@ -467,8 +467,8 @@ class FortranSourceFile (SourceFile):
     freeFormPreprocessRegEx = None
     fixedFormPreprocessRegEx = None
     includeFileRegEx = '.*\.(inc|fh)$'
-    f90defaultCompilerGroup = 'default'
-    f77defaultCompilerGroup = 'default'
+    f90defaultCompileGroup = 'default'
+    f77defaultCompileGroup = 'default'
     
     @classmethod
     def configure(cls, infoDict):
@@ -482,8 +482,8 @@ class FortranSourceFile (SourceFile):
             cls.preprocessFuncs['preprocessorFunction'] = infoDict.get('preprocessfunc')
         if 'preprocessednamefunc' in infoDict:
             cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.get('preprocessednamefunc')
-        cls.f90defaultCompilerGroup = infoDict.setdefault('f90defaultCompilerGroup', cls.f90defaultCompilerGroup)
-        cls.f77defaultCompilerGroup = infoDict.setdefault('f77defaultCompilerGroup', cls.f77defaultCompilerGroup)
+        cls.f90defaultCompileGroup = infoDict.setdefault('f90defaultCompileGroup', cls.f90defaultCompileGroup)
+        cls.f77defaultCompileGroup = infoDict.setdefault('f77defaultCompileGroup', cls.f77defaultCompileGroup)
         
     @classmethod
     def fileNameMatchesType(cls, fileName):
@@ -549,7 +549,7 @@ class CSourceFile (SourceFile):
     fileNameRegEx = '.*\.c$'
     includeFileRegEx = '.*\.h$'
     preprocessFileNameRegEx = None
-    defaultCompilerGroup = 'default'
+    defaultCompileGroup = 'default'
     
     @classmethod
     def configure(cls, infoDict):
@@ -561,7 +561,7 @@ class CSourceFile (SourceFile):
             cls.preprocessFuncs['preprocessorFunction'] = infoDict.get('preprocessfunc')
         if 'preprocessednamefunc' in infoDict:
             cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.get('preprocessednamefunc')
-        cls.defaultCompilerGroup = infoDict.setdefault('defaultCompilerGroup', cls.defaultCompilerGroup)
+        cls.defaultCompileGroup = infoDict.setdefault('defaultCompileGroup', cls.defaultCompileGroup)
     
     @classmethod
     def fileNameMatchesType(cls, fileName):
@@ -1103,11 +1103,11 @@ class BuildConfig:
         compileGroups = target.compileGroups()
         if isinstance(sourceFile, FortranSourceFile):
             if sourceFile.isFixedForm():
-                fileGroup = sourceFile.f77defaultCompilerGroup
+                fileGroup = sourceFile.f77defaultCompileGroup
             else:
-                fileGroup = sourceFile.f90defaultCompilerGroup
+                fileGroup = sourceFile.f90defaultCompileGroup
         elif isinstance(sourceFile, CSourceFile):
-            fileGroup = sourceFile.defaultCompilerGroup
+            fileGroup = sourceFile.defaultCompileGroup
         else:
             fileGroup = 'default'
         for groupName, fileNames in compileGroups.iteritems():
