@@ -467,6 +467,8 @@ class FortranSourceFile (SourceFile):
     freeFormPreprocessRegEx = None
     fixedFormPreprocessRegEx = None
     includeFileRegEx = '.*\.(inc|fh)$'
+    f90defaultCompilerGroup = 'default'
+    f77defaultCompilerGroup = 'default'
     
     @classmethod
     def configure(cls, infoDict):
@@ -476,8 +478,12 @@ class FortranSourceFile (SourceFile):
         cls.freeFormPreprocessRegEx = infoDict.setdefault('freeformpreprocessregex', cls.freeFormPreprocessRegEx)
         cls.fixedFormPreprocessRegEx = infoDict.setdefault('fixedformpreprocessregex', cls.fixedFormPreprocessRegEx)
         cls.includeFileRegEx = infoDict.setdefault('includefileregex', cls.includeFileRegEx)
-        cls.preprocessFuncs['preprocessorFunction'] = infoDict.setdefault('preprocessfunc', None)
-        cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.setdefault('preprocessednamefunc', None)
+        if 'preprocessfunc' in infoDict:
+            cls.preprocessFuncs['preprocessorFunction'] = infoDict.get('preprocessfunc')
+        if 'preprocessednamefunc' in infoDict:
+            cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.get('preprocessednamefunc')
+        cls.f90defaultCompilerGroup = infoDict.setdefault('f90defaultCompilerGroup', cls.f90defaultCompilerGroup)
+        cls.f77defaultCompilerGroup = infoDict.setdefault('f77defaultCompilerGroup', cls.f77defaultCompilerGroup)
         
     @classmethod
     def fileNameMatchesType(cls, fileName):
@@ -543,6 +549,7 @@ class CSourceFile (SourceFile):
     fileNameRegEx = '.*\.c$'
     includeFileRegEx = '.*\.h$'
     preprocessFileNameRegEx = None
+    defaultCompilerGroup = 'default'
     
     @classmethod
     def configure(cls, infoDict):
@@ -550,8 +557,11 @@ class CSourceFile (SourceFile):
         cls.fileNameRegEx = infoDict.setdefault('fileregex', cls.fileNameRegEx)
         cls.includeFileRegEx = infoDict.setdefault('includefileregex', cls.includeFileRegEx)
         cls.preprocessFileNameRegEx = infoDict.setdefault('preprocessfileregex', cls.preprocessFileNameRegEx)
-        cls.preprocessFuncs['preprocessorFunction'] = infoDict.get('preprocessfunc')
-        cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.get('preprocessednamefunc')
+        if 'preprocessfunc' in infoDict:
+            cls.preprocessFuncs['preprocessorFunction'] = infoDict.get('preprocessfunc')
+        if 'preprocessednamefunc' in infoDict:
+            cls.preprocessFuncs['preprocessedFileNameFunction'] = infoDict.get('preprocessednamefunc')
+        cls.defaultCompilerGroup = infoDict.setdefault('defaultCompilerGroup', cls.defaultCompilerGroup)
     
     @classmethod
     def fileNameMatchesType(cls, fileName):
@@ -1091,7 +1101,15 @@ class BuildConfig:
     def compileGroupForFile(self, target, sourceFile):
         fileName = os.path.split(sourceFile.path())[1]
         compileGroups = target.compileGroups()
-        fileGroup = 'default'
+        if isinstance(sourceFile, FortranSourceFile):
+            if sourceFile.isFixedForm():
+                fileGroup = sourceFile.f77defaultCompilerGroup
+            else:
+                fileGroup = sourceFile.f90defaultCompilerGroup
+        elif isinstance(sourceFile, CSourceFile):
+            fileGroup = sourceFile.defaultCompilerGroup
+        else:
+            fileGroup = 'default'
         for groupName, fileNames in compileGroups.iteritems():
             if fileName in fileNames:
                 fileGroup = groupName
