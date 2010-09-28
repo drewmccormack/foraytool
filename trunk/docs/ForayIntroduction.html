@@ -421,6 +421,7 @@ buildinfo = \
 <li><code>includefileregex</code>: Should match a Fortran file that gets included in other files, but does not need to be compiled.</li>
 <li><code>preprocessednamefunc</code>: The function that translates a file name before preprocessing into the file name after preprocessing.</li>
 <li><code>preprocessfunc</code>: The Python function that invokes the preprocessor.</li>
+<li><code>f90/f77defaultCompileGroup</code>: Optional. Define a default compile group for f90 / f77 files respectively, which can be defined in compilegroupflags entry of the build config. There default value is set to 'default'.</li>
 </ul>
 
 <p>There is a block analogous to <code>fortranfiles</code> for C files, called <code>cfiles</code>. Note that if you are only using the standard C preprocessor, you do not need a <code>cfiles</code> block. You only need to add a <code>cfiles</code> block if you want to run a second preprocessor in addition to the standard C preprocessor. The entries in <code>cfiles</code> are</p>
@@ -431,6 +432,7 @@ buildinfo = \
 <li><code>preprocessFileNameRegEx</code>: Should match a C file that needs to be preprocessed (by the secondary preprocessor).</li>
 <li><code>preprocessednamefunc</code>: The function that translates a file name before preprocessing into the file name after preprocessing.</li>
 <li><code>preprocessfunc</code>: The Python function that invokes the preprocessor.</li>
+<li><code>defaultCompileGroup</code>: Optional compile group name to be defined in the configs in the compilegroupflags entry. Default value is 'default'.</li>
 </ul>
 
 <h4 id="performing_setup_on_first_build">Performing Setup on First Build</h4>

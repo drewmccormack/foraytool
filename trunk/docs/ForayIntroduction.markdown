@@ -349,7 +349,9 @@ To use a preprocessor for your Fortran source code, you need to be a bit familia
 	    'fixedformpreprocessregex'  : '.*\.d$',
 	    'preprocessednamefunc'      : preprocessedfilename,
 	    'preprocessfunc'            : preprocess,
-	    'includefileregex'          : '.*\.fh$'
+	    'includefileregex'          : '.*\.fh$',
+            'f90defaultCompileGroup'    : 'f90Default',
+            'f77defaultCompileGroup'    : 'f77Default'
 	}
 	
 	...
@@ -377,6 +379,7 @@ That explains how the functions should be written, but not how they are passed t
 *	`includefileregex`: Should match a Fortran file that gets included in other files, but does not need to be compiled.
 *	`preprocessednamefunc`: The function that translates a file name before preprocessing into the file name after preprocessing.
 *	`preprocessfunc`: The Python function that invokes the preprocessor.
+*       `f90/f77defaultCompileGroup`: Optional. Define a default compile group for f90 / f77 files respectively, which can be defined in compilegroupflags entry of the build config. There default value is set to 'default'.
 
 There is a block analogous to `fortranfiles` for C files, called `cfiles`. Note that if you are only using the standard C preprocessor, you do not need a `cfiles` block. You only need to add a `cfiles` block if you want to run a second preprocessor in addition to the standard C preprocessor. The entries in `cfiles` are
 
@@ -385,6 +388,7 @@ There is a block analogous to `fortranfiles` for C files, called `cfiles`. Note 
 *	`preprocessFileNameRegEx`: Should match a C file that needs to be preprocessed (by the secondary preprocessor).
 *	`preprocessednamefunc`: The function that translates a file name before preprocessing into the file name after preprocessing.
 *	`preprocessfunc`: The Python function that invokes the preprocessor.
+*       `defaultCompileGroup`: Optional compile group name to be defined in the configs in the compilegroupflags entry. Default value is 'default'.
 
 #### Performing Setup on First Build
 In some projects, there may need to be some setup of the build environment on the first build. For example, perhaps certain files are only available in object form, and you thus need to ensure that some of the libraries are populated with these objects before building begins. 
