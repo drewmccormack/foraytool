@@ -1,0 +1,3 @@
+Fortran 90 can include reasonably complex dependencies, which must be taken into account when building a multiple-file program. Unfortunately, most build tools either don't support Fortran, or don't help the developer much. A standard make file, for example, requires you to enter dependencies manually, or develop a script to do it for you.
+
+Foray is a build tool designed specifically for Fortran projects. It can be applied to anything from a small utility program with tens of files to a million line monster. Foray natively handles Fortran dependencies, takes care of locating files in subdirectories, and includes advanced features like multi-threading for better performance on multi-core systems, and multiple build configurations (eg debug, release, serial, parallel).
