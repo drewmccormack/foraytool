@@ -1,10 +1,8 @@
-Foray User Documentation
+Foray — Fortran Build Tool
 =============================================
 
 Author: Drew McCormack<br />
-Email: [drewmccormack@mac.com](mailto:drewmccormack@mac.com)<br />
-Web Sites: [www.macresearch.org](http://www.macresearch.org), [www.maccoremac.com](http://www.maccoremac.com), 
-           [www.macanics.net](http://www.macanics.net)
+Updated: 2008<br \>
 
 Fortran 90 can include reasonably complex dependencies, which must be taken into account when building a multiple-file program. Unfortunately, most build tools either don't support Fortran, or don't help the developer much. A standard `make` file, for example, requires you to enter dependencies manually, or develop a script to do it for you. 
 
