@@ -2,6 +2,7 @@
 
 import os, os.path, sys, re, string, logging, subprocess
 import time, shutil, threading
+from functools import reduce
 
 # ---------
 # Globals
@@ -49,7 +50,7 @@ def RunSubprocess(command):
         success = False
     if success:
         if process.returncode < 0:
-            print 'Build Interrupted'
+            print('Build Interrupted')
             success = False
         elif process.returncode > 0:
             success = False
@@ -306,10 +307,10 @@ class SourceFile:
                 self.setBuildChecksum(self.checksum())
                 self.setBuildCompileCommand(self.compileCommand())
             else:
-                print 'Failed to compile %s' % (self.fileName())
+                print('Failed to compile %s' % (self.fileName()))
                 self._buildFailed = True
         else:
-            print 'Failed to preprocess %s' % (self.fileName())
+            print('Failed to preprocess %s' % (self.fileName()))
             self._buildFailed = True
         return not self._buildFailed
         
@@ -319,9 +320,9 @@ class SourceFile:
     def runCompileCommand(self, compileCommand):
         if compileCommand == None: return True
         PrintLock.acquire()
-        print 'Compiling %s' % (self.path())
+        print('Compiling %s' % (self.path()))
         if self._verboseOutput: 
-            print '%s\n' % (compileCommand)
+            print('%s\n' % (compileCommand))
         logging.debug('Compile Command: %s' % (compileCommand))        
         PrintLock.release()
         success, output, error = RunSubprocess(compileCommand + ' 2>&1')
@@ -332,13 +333,13 @@ class SourceFile:
                 success = True
             else:
                 PrintLock.acquire()
-                print output
+                print(output)
                 PrintLock.release()
             f.close()
         else:
             # If the compile succeeded, check the output for any warnings to print
             if re.search('warn', output, re.IGNORECASE):
-                print output
+                print(output)
         return success
         
     def isBuilt(self):
@@ -657,7 +658,7 @@ class SourceTree:
         elif CSourceFile.fileNameMatchesType(fileName): 
             f = CSourceFile(path, self.projectRoot)
         else:
-            raise Exception, 'Unknown file type in sourceFileForPath'
+            raise Exception('Unknown file type in sourceFileForPath')
         f.setVerboseOutput(self.verboseOutput)
         return f
         
@@ -809,10 +810,10 @@ class SourceTree:
                         found = True
                         break
                 if not found:
-                    raise Exception, 'Could not find include file %s from %s' % (includeFile, f.fileName())
+                    raise Exception('Could not find include file %s from %s' % (includeFile, f.fileName()))
                 
         # Check for cycles
-        print 'Checking for cyclic dependencies'
+        print('Checking for cyclic dependencies')
         remainingFiles = set(fortranSourceFiles)
         while len(remainingFiles) > 0:
             checkedFiles = set()
@@ -948,13 +949,13 @@ class Target:
             if self.isBuilt and 'exename' in self.targetInfoDict: 
                 self.isBuilt = self.compileExecutable(buildConfig)
                 if not self.isBuilt:
-                    print 'Failed to link executable for target %s' % (self.name())
+                    print('Failed to link executable for target %s' % (self.name()))
         return self.isBuilt, numFilesBuilt
         
     def install(self, buildConfig):
         import shutil
         if 'exename' not in self.targetInfoDict: return
-        print 'Installing %s' % (self.name())
+        print('Installing %s' % (self.name()))
         exeDir = os.path.join(self.projectRoot, self.productExecutableDirectory(buildConfig))
         exePath = os.path.join(exeDir, self.executableName())
         binDir = self.productInstallDirectory(buildConfig)
@@ -975,7 +976,7 @@ class Target:
         os.environ['FORAY_INSTALL_DIR'] = self.productInstallDirectory(buildConfig)
             
     def compileSources(self, buildConfig, numThreads, clean, noDependencies):
-        print 'Starting build for target "%s" with config "%s"' % (self.name(), buildConfig.name())
+        print('Starting build for target "%s" with config "%s"' % (self.name(), buildConfig.name()))
         libDirPath = self.productLibraryDirectory(buildConfig)
         if not os.path.exists(libDirPath): 
             os.makedirs(libDirPath)
@@ -1016,9 +1017,9 @@ class Target:
                 logging.debug('Indexing library: ' + indexLibCommand)
                 success, output, error = RunSubprocess(indexLibCommand) 
                 if not success: 
-                    print 'ranlib failed'
-                    print output
-                    print error
+                    print('ranlib failed')
+                    print(output)
+                    print(error)
         self.buildQueue = None
         self._sourceTree.updateConfigDependMetadata(buildConfig)
         if success:
@@ -1027,7 +1028,7 @@ class Target:
             statusString = 'Compiling interrupted'
         else:
             statusString = 'Failed to build library'
-        print statusString + ' for target "%s" and config "%s"' % (self.name(), buildConfig.name())
+        print(statusString + ' for target "%s" and config "%s"' % (self.name(), buildConfig.name()))
         return success, numFilesBuilt
 
     def compileExecutable(self, buildConfig):
@@ -1035,16 +1036,16 @@ class Target:
         if not os.path.exists(exeDirPath): os.makedirs(exeDirPath)
         os.chdir(exeDirPath)
         exeCommand = buildConfig.linkExecutableCommand(self)
-        print 'Compiling executable for %s' % (self.name())
+        print('Compiling executable for %s' % (self.name()))
         logging.debug('Compile command: %s' % (exeCommand))
         success, output, error = RunSubprocess(exeCommand)
         if not success: 
-            if output: print output
-            if error: print error
+            if output: print(output)
+            if error: print(error)
         return success
         
     def archiveBuildProducts(self, buildConfig, sourceFiles):
-        print 'Archiving object files'
+        print('Archiving object files')
         sourceFilesToArchive = [s for s in sourceFiles if not s.isMainProgram()]
         if len(sourceFilesToArchive) == 0: return
         command = buildConfig.archiveCommand(self, sourceFilesToArchive)
@@ -1052,12 +1053,12 @@ class Target:
         if command: 
             success, output, error = RunSubprocess(command)
             if not success: 
-                if output: print output
-                if error: print error
+                if output: print(output)
+                if error: print(error)
         
     def unarchiveBuildProducts(self, buildConfig, sourceFilePaths):
         "Removes object files corresponding to the project relative paths passed."
-        print 'Removing object files for which source files no longer exist'
+        print('Removing object files for which source files no longer exist')
         sourceFiles = [self._sourceTree.createSourceFileForPath(p) for p in sourceFilePaths]
         sourceFiles = [f for f in sourceFiles if f.generatesObjectFile()]
         if len(sourceFiles) == 0: return
@@ -1066,20 +1067,20 @@ class Target:
         if command: 
             success, output, error = RunSubprocess(command)
             if not success: 
-                if output: print output
-                if error: print error    
+                if output: print(output)
+                if error: print(error)    
                     
     def removeModuleFiles(self, buildConfig, removedSourceFiles):
         "Removes module files for the given source files."
         sourceFiles = [f for f in removedSourceFiles if f.generatesModuleFile()]
         if len(sourceFiles) == 0: return
-        print 'Removing module files for which source files no longer exist'
+        print('Removing module files for which source files no longer exist')
         moduleFiles = []
         for f in sourceFiles :
             moduleFiles.extend(f.moduleFilePaths())
         for f in moduleFiles :
             fn = os.path.join(self.intermediateProductsDirectory(buildConfig), f)
-            print self.buildRootDir
+            print(self.buildRootDir)
             if os.path.exists(fn) :
                 os.remove(fn)
                     
@@ -1109,7 +1110,7 @@ class BuildConfig:
             fileGroup = sourceFile.defaultCompileGroup
         else:
             fileGroup = 'default'
-        for groupName, fileNames in compileGroups.iteritems():
+        for groupName, fileNames in compileGroups.items():
             if fileName in fileNames:
                 fileGroup = groupName
                 break
@@ -1242,8 +1243,8 @@ class BuildQueue:
                     f = getNextSourceFile()
                 else:
                     self.buildShouldStop = True
-        except Exception, e:
-            print 'An error occurred: ', e
+        except Exception as e:
+            print('An error occurred: ', e)
             self.buildShouldStop = True
                       
     ArchiveThreshold = 100
@@ -1292,12 +1293,12 @@ class Builder:
         self.verbose = verbose
         
         # read old metadata
-        import cPickle
+        import pickle
         metadataFilePath = self.metadataFilePath()
         self.allFileMetadata = None
         if os.path.exists(metadataFilePath):
             f = open(metadataFilePath, 'rb')
-            self.allFileMetadata = cPickle.load(f)
+            self.allFileMetadata = pickle.load(f)
             f.close()
         if not self.allFileMetadata: self.allFileMetadata = {}
                 
@@ -1308,7 +1309,7 @@ class Builder:
         for configName in configNames:
             configDicts = [d for d in self.buildInfo['configs'] if d['name'] == configName]
             if len(configDicts) != 1: 
-                raise Exception, 'Invalid configuration %s' % (configName)
+                raise Exception('Invalid configuration %s' % (configName))
             configDict = configDicts[0]
             flattenedConfigDict = self.flattenConfigInheritance(configDict)
             logging.debug('Flattened config dict for %s: %s' % (configDict['name'], str(flattenedConfigDict)))
@@ -1336,7 +1337,7 @@ class Builder:
         
         def recursiveUpdate(dictToUpdate, dictToUpdateWith):
             "Recursively update a tree of dictionaries"
-            for key,value in dictToUpdateWith.iteritems():
+            for key,value in dictToUpdateWith.items():
                 if key in dictToUpdate and isinstance(value, dict):
                     recursiveUpdate(dictToUpdate[key], dictToUpdateWith[key]) 
                 else:
@@ -1358,7 +1359,7 @@ class Builder:
         return os.path.join(ExpandShellArgs(self.buildInfo['builddir']), 'build.foraymetadata')
                 
     def build(self):
-        import pprint, cPickle
+        import pprint, pickle
                     
         # Build each combination of target and config
         allFileMetadata = self.allFileMetadata
@@ -1376,14 +1377,14 @@ class Builder:
                 
             if not success: break
             
-        print 'Storing file meta data'
+        print('Storing file meta data')
         metadataFilePath = self.metadataFilePath()
         if self.debug:
             f = open(metadataFilePath + '.debug', 'w')
             pprint.pprint(allFileMetadata, f)
             f.close()
         f = open(metadataFilePath, 'wb')
-        cPickle.dump(allFileMetadata, f)
+        pickle.dump(allFileMetadata, f)
         f.close()
             
         self.currentTarget = None
@@ -1434,7 +1435,7 @@ buildinfoGlobals = {}
 buildinfoPath = FindFileInAncestorDirs(os.getcwd(), options.buildinfofile)
 if not buildinfoPath: 
     sys.exit('Could not locate buildinfo file')
-execfile(buildinfoPath, buildinfoGlobals)
+exec(compile(open(buildinfoPath).read(), buildinfoPath, 'exec'), buildinfoGlobals)
 if 'buildinfo' not in buildinfoGlobals: 
     sys.exit('No buildinfo dict found in buildinfo file')
 buildInfo = buildinfoGlobals['buildinfo']
@@ -1462,8 +1463,8 @@ else:
     try:
         if builder.build():
             builder.install()
-    except Exception, e:
-        print 'Foray Error: ' + str(e.args[0])
+    except Exception as e:
+        print('Foray Error: ' + str(e.args[0]))
 
 
 # ------------------------------------------------------------------------------------
