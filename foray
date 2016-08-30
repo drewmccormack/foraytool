@@ -603,7 +603,7 @@ class SourceTree:
         self.skipdirs = set(skipdirs)
         self.metadata = metadata
         self.mainProgramFile = mainProgramFile
-        regExStr = r'^\s*(%s)([\d\w_]+)' % (string.join(includeKeywords,'|'),) 
+        regExStr = r'^\s*(%s)([\d\w_.]+)' % (string.join(includeKeywords,'|'),)
         self.moduleUseRegEx = re.compile(regExStr, re.IGNORECASE | re.MULTILINE)
         self.sourceTreesDependedOn = sourceTreesDependedOn
         self.noDependencies = noDependencies
@@ -805,7 +805,7 @@ class SourceTree:
             for includeFile in includedFilesDict[f]:
                 found = False
                 for sourceFile, base in zip(fortranSourceFiles, fileBases):
-                    if (sourceFile.fileName() == includeFile) or (base == includeFile):
+                    if (sourceFile.fileName() == includeFile):
                         f.addDirectDependency(sourceFile)
                         found = True
                         break
