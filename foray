@@ -87,7 +87,7 @@ class SourceFile:
         self._verboseOutput = False
         self.resetMetadata()
         self.resetConfigDepMetadata()
-        
+                
     def resetMetadata(self):
         self._lastScan = None
         self._lastScanChecksum = None
@@ -322,7 +322,7 @@ class SourceFile:
         print 'Compiling %s' % (self.path())
         if self._verboseOutput: 
             print '%s\n' % (compileCommand)
-        logging.debug('Compile Command: %s' % (compileCommand))
+        logging.debug('Compile Command: %s' % (compileCommand))        
         PrintLock.release()
         success, output, error = RunSubprocess(compileCommand + ' 2>&1')
         if not success:
@@ -442,7 +442,7 @@ class SourceFile:
         
     TreeStringIndentLevel = 4
     def dependencyString(self, indent):
-        aString = ''
+        aString = ''        
         for dependentFile in self._directDependencies:
             aString += '\n' + indent * ' ' + dependentFile.path()
             aString += dependentFile.dependencyString(indent + self.TreeStringIndentLevel)
@@ -454,7 +454,6 @@ class SourceFile:
         s += 'Last Modified: %s\n' % (self.lastModified())
         s += 'Can Build: %s\n' % (self.canBuild())
         s += 'Needs Building: %s\n' % (self.needsBuilding())
-        s += 'Marked for Building: %s\n' % (self.markedForBuilding())
         s += 'Dependencies'
         s += self.dependencyString(self.TreeStringIndentLevel) + '\n'
         return s
@@ -462,11 +461,11 @@ class SourceFile:
                 
 class FortranSourceFile (SourceFile):
     
-    freeFormRegEx = '.*\.(F|f90|F90)$'
-    fixedFormRegEx = '.*\.f$'
+    freeFormRegEx = '.*\.(f90|F90)$'
+    fixedFormRegEx = '.*\.(f|F|FOR|for)$'
     freeFormPreprocessRegEx = None
     fixedFormPreprocessRegEx = None
-    includeFileRegEx = '.*\.(inc|fh)$'
+    includeFileRegEx = '.*\.(INC|inc|fh|fi)$'
     f90defaultCompileGroup = 'default'
     f77defaultCompileGroup = 'default'
     
@@ -502,7 +501,7 @@ class FortranSourceFile (SourceFile):
         if cls.includeFileRegEx: all.append(cls.includeFileRegEx)
         return all
 
-    def requiresPreprocessing(self):
+    def requiresPreprocessing(self):    
         return \
             ( self.freeFormPreprocessRegEx and
               re.match(self.freeFormPreprocessRegEx, self.fileName()) ) or \
@@ -596,7 +595,7 @@ class CSourceFile (SourceFile):
 class SourceTree:
     def __init__(self, rootDirs, sourceTreesDependedOn, metadata, projectRoot, skipdirs, skipfiles, 
         mainProgramFile = None, noDependencies = False, verboseOutput = False,
-        includeKeywords = [r'use\s+', r'module\s+', r'\*copy\s+', r'include\s*[\'\"]', r'\#include\s*[\'\"]']):
+        includeKeywords = [r'use\s+', r'module\s+', r'\*copy\s+', r'include\s*[\'\"]', r'\#include\s*[\'\"]']):        
         self.rootDirs= rootDirs
         self.projectRoot = projectRoot
         self.skipfiles = set(skipfiles)
@@ -1234,7 +1233,7 @@ class BuildQueue:
             
         try:
             f = getNextSourceFile()
-            while f and not self.buildShouldStop:     
+            while f and not self.buildShouldStop:  
                 success = f.build()
                 if success:
                     self.builtSourceFilesLock.acquire()
@@ -1254,7 +1253,7 @@ class BuildQueue:
         self.buildableSourceFiles = self.sourceTree.buildableSourceFiles()
         numFilesBuilt = 0
         numFilesBuiltSinceLastArchive = 0
-        self.builtSourceFiles = []
+        self.builtSourceFiles = []        
         while len(self.buildableSourceFiles) > 0 and not self.buildShouldStop:
             numBuiltBefore = len(self.builtSourceFiles)
             threads = []
