@@ -46,7 +46,7 @@ def RunSubprocess(command):
     import subprocess
     success = True
     try:
-        process = subprocess.Popen(command, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        process = subprocess.Popen(command, universal_newlines=True, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
         output, error = process.communicate()
     except OSError:
         success = False
@@ -340,7 +340,7 @@ class SourceFile:
             f.close()
         else:
             # If the compile succeeded, check the output for any warnings to print
-            if re.search('warn', output.decode('utf-8'), re.IGNORECASE):
+            if re.search('warn', output, re.IGNORECASE):
                 print(output)
         return success
 
