@@ -4,7 +4,7 @@ Foray — Fortran Build Tool
 Author: Drew McCormack<br />
 Updated: 2008<br \>
 
-Fortran 90 can include reasonably complex dependencies, which must be taken into account when building a multiple-file program. Unfortunately, most build tools either don't support Fortran, or don't help the developer much. A standard `make` file, for example, requires you to enter dependencies manually, or develop a script to do it for you. 
+Fortran 90 can include reasonably complex dependencies, which must be taken into account when building a multiple-file program. Unfortunately, most build tools either don't support Fortran, or don't help the developer much. A standard `make` file, for example, requires you to enter dependencies manually, or develop a script to do it for you.
 
 Foray is a build tool designed specifically for Fortran projects. It can be applied to anything from a small utility program with tens of files to a million line monster. Foray natively handles Fortran dependencies, takes care of locating files in subdirectories, and includes advanced features like multi-threading for better performance on multi-core systems, and multiple build configurations (_eg_ debug, release, serial, parallel).
 
@@ -22,7 +22,7 @@ A more up-to-date option is [SCons](http://www.scons.org/). SCons is an advanced
 
 Philosophy and Design Requirements
 ----------------------------------
-Here follows a list of basic design requirements that formed the basis of Foray, and some justification for them. 
+Here follows a list of basic design requirements that formed the basis of Foray, and some justification for them.
 
 Foray should
 
@@ -40,7 +40,7 @@ Foray should
 	*	Sorry Windows users. We've never tested Foray on Windows, but we assume it doesn't work. May not take much to get it to work though.
 *	Scale on multi-core systems.
 *	Understand Fortran dependencies, and determine them automatically.
-*	Not mix build configuration files (*eg* make files) with source files. 
+*	Not mix build configuration files (*eg* make files) with source files.
 	*	All configuration should be in one file in the project root. We find this preferable to the way `make`, and even `scons`, favor recursive builds with a configuration file in every source directory. It's analogous to how some source control tools (*eg.* CVS and Subversion) write their metadata in directories in the source tree. Our view is that tools should not mix their data directly with the source tree, and this is a philosophy shared by many recently-developed programming tools (_eg_ [Git](http://git.or.cz/)).
 *	Have the ability to set different compile options for different groups of files, or individual files.
 	*	Fortran compilers have bugs. It is rare that one set of compile flags work for all files in a large program. And often you will want to set higher optimization for certain performance critical files.
@@ -71,6 +71,7 @@ A projects build configuration is usually stored in a file called 'buildinfo' in
 
 The easiest way to get acquainted with a BuildInfo is to take a look at one. Here is an example BuildInfo file.
 
+```python
 	buildinfo = \
 	{
 	    'builddir' : '$FORAY_PROJECT_ROOT/build',
@@ -164,6 +165,7 @@ The easiest way to get acquainted with a BuildInfo is to take a look at one. Her
 	        }
 	    ]
 	}
+```
 
 This is a standard Python data structure; Foray expects that the variable `buildinfo` will be assigned to this structure. The data structure defines a number of settings needed by Foray:
 
@@ -173,12 +175,15 @@ This is a standard Python data structure; Foray expects that the variable `build
 
 Many settings in the BuildInfo file will perform shell expansions. The build directory is a case in point:
 
+```python
 	'builddir' : '$FORAY_PROJECT_ROOT/build',
-  
-This environment variable `$FORAY_PROJECT_ROOT` will be substituted in determining the path to the build directory. 
+```
+
+This environment variable `$FORAY_PROJECT_ROOT` will be substituted in determining the path to the build directory.
 
 The list corresponding to the `targets` key contains target dictionaries. If the target is a library, it looks like this
 
+```python
 	{
 	    'name' : 'libbase',
 	    'rootdirs' : ['base'],
@@ -191,20 +196,22 @@ The list corresponding to the `targets` key contains target dictionaries. If the
 	        'safe' : ['HistogramBuilder.f90']
 	    }
 	},
-	
+```
+
 The dictionary entries are as follows:
 
 *	`name` is the target's name
 *	`rootdirs` is a list of subdirectories of the project root that holds the target's source code
-*	`buildsubdir` is a subdirectory in the build directory used to store the intermediate build product files of the target; 
+*	`buildsubdir` is a subdirectory in the build directory used to store the intermediate build product files of the target;
 *	`libraryname` is the name of the library archive used for the target's object files, excluding the 'lib' and '.a' pre- and postfixes
 *	`skipdirs` is a list of directory names to skip when scanning for source files
 *	`skipfiles` is a list of file names to ignore
-*	`dependson` is a list of other targets that must be built before this target gets built 
+*	`dependson` is a list of other targets that must be built before this target gets built
 *	`compilegroups` is a dictionary containing lists of files corresponding to special sets of compile flags. In the example above, `safe` is a the name of a compile group, and it contains just the one file `HistogramBuilder.f90`.
 
 An executable target has a few extra keys:
 
+```python
 	{
 	    'name' : 'cmc',
 	    'rootdirs' : ['cmc'],
@@ -218,6 +225,7 @@ An executable target has a few extra keys:
 	    'compilegroups' : {
 	    }
 	},
+```
 
 Note that even an executable target has a `libraryname` setting; that's because all object files get archived in static libraries, even for an executable.
 
@@ -225,6 +233,7 @@ The main difference between the library and executable target dictionaries are t
 
 Build configurations allow you to build targets with different sets of compile settings. For example, they could be used to build separate parallel, serial, and debug versions of a target. A build configuration looks like this
 
+```python
 	{
 	    'name' : 'default',
 	    'buildsubdir' : 'default',
@@ -249,13 +258,15 @@ Build configurations allow you to build targets with different sets of compile s
 	        }
 	    }
 	},
-	
+```
+
 It is useful, though not compulsory, to define standard build settings in one 'default' configuration. This configuration never gets built directly, but is used as the basis of other configurations.
 
 The default configuration above should be fairly self explanatory. It defines fairly standard settings, similar to settings you would see in other build tools. However, there are a couple of settings that could use some additional explanation: `prioritylibs` is a string used in linking to add any external libraries that should appear early in the link command, before any other libraries. Link order can sometimes be significant for resolving symbols, and that is the reason it has been provided. The `compilegroupflags` dictionary defines *extra* compile options that are applied to the files included in the corresponding groups declared earlier in the target settings. One noteworthy point is that all build configurations must have a `default` key in the `compilegroupflags`, which is used for all files that do not fall into any other group.
 
 The `default` configuration above is never actually built, but is used to set default values for other build configurations. This works via an 'inheritance' mechanism, a bit like in object-oriented programming. The `release` build configuration inherits everything from the `default` configuration, and *overrides* a few settings.
 
+```python
 	{
 	    'name'                  : 'release',
 	    'inherits'              : 'default',
@@ -268,7 +279,8 @@ The `default` configuration above is never actually built, but is used to set de
 	        }
 	    }
 	},
-	
+```
+
 The `inherits` key gives the name of the inherited configuration. Anything that appears in the *derived* configuration overrides the value from the inherited configuration. This works in a recursive way. For example, the `release` build configuration defines a `compileoptions` dictionary containing one `compilegroupflags` key. This does not mean that all the settings in the `default` configuration's `compileroptions` dictionary will be replaced; only the specific ones provided, like the `default` and `safe` keys in `compilegroupflags` will be replaced. Any others would remain intact.
 
 There is one last aspect of the `release` configuration that demands consideration: the `installdir` setting. After a successful build, Foray will copy any resulting executable to the install directory. You can set the same install directory for each target, in which case only the executable's from the last configuration built will survive afterwards, with all others being overwritten, or you can use a different install directory for each configuration.
@@ -282,19 +294,19 @@ Foray is straightforward to use. It must be run from the project root directory.
 To build on a multi-core machine, you can set the number of threads using the `-j` option.
 
 	foray -j 2
-	
+
 (You can also set an environment variable to do the same: `FORAY_NUM_THREADS`.)
 
 To only build certain targets, just list them (in any order):
 
 	foray cmctest cmc
-	
+
 Any targets that the listed targets depend upon will also be built.
 
 You can also build multiple configurations at once using the `-b` option.
 
 	foray -b release -b debug cmctest cmc
-	
+
 Each configuration will be build with each target listed.
 
 Finally, there are a few other useful options: `-h` for help; `-d` for verbose debugging output; and `-c` to do a clean build, in which all files are rebuilt.
@@ -306,6 +318,7 @@ The example above shows how a standard Fortran project can be configured for bui
 #### Using a Preprocessor
 To use a preprocessor for your Fortran source code, you need to be a bit familiar with Python, so that you can supply functions that run the preprocessor. The `cmc` example supplied with Foray shows how.
 
+```python
 	# Preprocessing functions
 	def preprocessedfilename(infile):
 	    """
@@ -313,31 +326,31 @@ To use a preprocessor for your Fortran source code, you need to be a bit familia
 	    passed in.
 	    """
 	    base, ext = os.path.splitext(infile)
-    
+
 	    if ext == '.d':        
 	        outfile = base + '.f'
 	    elif ext == '.d90':
 	        outfile = base + '.f90'
 	    else:
 	        outfile = infile
-        
+
 	    return outfile
-    
+
 	def preprocess(srcPath, outDir):
 	    """
 	    This function demonstrates how you can preprocess source files.
 	    If you do not need a preprocessor, you can remove this function, and
 	    the preprocessor related keys from the buildinfo dictionary.
 	    This example assumes you want to use the C preprocessor for fortran files.
-	    It expects a source file with extension d or d90, and produces a fortran file 
+	    It expects a source file with extension d or d90, and produces a fortran file
 	    on output.
 	    """
 	    filename = os.path.basename(srcPath)
 	    outFile = preprocessedfilename(filename)
 	    outPath = os.path.join(outDir, outFile)
 	    return (0 == subprocess.call('gcc -E -x c -P -C "%s" > "%s"' % (srcPath, outPath), shell=True))
-    
-    
+
+
 	# Fortran file types
 	fortranfiles = \
 	{
@@ -351,9 +364,9 @@ To use a preprocessor for your Fortran source code, you need to be a bit familia
             'f90defaultCompileGroup'    : 'f90Default',
             'f77defaultCompileGroup'    : 'f77Default'
 	}
-	
+
 	...
-	
+
 	# Combine everything in buildinfo dictionary   
 	buildinfo = \
 	{
@@ -363,7 +376,8 @@ To use a preprocessor for your Fortran source code, you need to be a bit familia
 	    'defaultconfig' : 'debug',
 	    'configs'       : configs
 	}
-	
+```
+
 You need to write two Python functions in the BuildInfo file. The first takes the name of a yet to be preprocessed file, and returns the name of the file produced by the preprocessor. In other words, this function simply translates a file name prior to preprocessing into the file name after preprocessing.
 
 The second function actually performs the preprocessing. In the example above, the `gcc` C preprocessor is used. The function takes the path to the source file, and the path to the directory where the preprocessed file should end up, and returns `True` if preprocessing was successful, and `False` otherwise. The example above shows that in the most common cases, the function should simply run a command that invokes the preprocessor, and ensure that the output file ends up in the directory passed to the function.
@@ -372,7 +386,7 @@ That explains how the functions should be written, but not how they are passed t
 
 *	`freeformregex`: Should match a standard free-format Fortran file that does not need preprocessing.
 *	`fixedformregex`: Should match a standard fixed-format Fortran file that does not need preprocessing.
-*	`freeformpreprocessregex`: Should match a free-format Fortran file that needs preprocessing.	
+*	`freeformpreprocessregex`: Should match a free-format Fortran file that needs preprocessing.
 *	`fixedformpreprocessregex`: Should match a fixed-format Fortran file that needs preprocessing.
 *	`includefileregex`: Should match a Fortran file that gets included in other files, but does not need to be compiled.
 *	`preprocessednamefunc`: The function that translates a file name before preprocessing into the file name after preprocessing.
@@ -389,7 +403,7 @@ There is a block analogous to `fortranfiles` for C files, called `cfiles`. Note 
 *       `defaultCompileGroup`: Optional compile group name to be defined in the configs in the compilegroupflags entry. Default value is 'default'.
 
 #### Performing Setup on First Build
-In some projects, there may need to be some setup of the build environment on the first build. For example, perhaps certain files are only available in object form, and you thus need to ensure that some of the libraries are populated with these objects before building begins. 
+In some projects, there may need to be some setup of the build environment on the first build. For example, perhaps certain files are only available in object form, and you thus need to ensure that some of the libraries are populated with these objects before building begins.
 
 Foray provides a hook for this, in the form of a callback function. If you want to perform some setup the first time a particular target and configuration are built, you need to supply a Python function in the buildinfo dictionary, with the key `firstbuildfunc`. The function should take the following arguments:
 
@@ -403,7 +417,7 @@ Foray provides a hook for this, in the form of a callback function. If you want 
 You can use any of these arguments to aid your setup.
 
 #### Preparing to Build a Particular Configuration
-Foray also provides a hook for preparing your project to build a particular build configuration. Perhaps certain files need to be swapped in or out when building a particular configuration. 
+Foray also provides a hook for preparing your project to build a particular build configuration. Perhaps certain files need to be swapped in or out when building a particular configuration.
 
 The function should be supplied in the BuildInfo file with the key `prepareconfigfunc`. It should take one argument, the name of the build configuration. If you need access to other aspects of the build environment, you can access the Foray environment variables (see below).
 
@@ -420,7 +434,9 @@ Foray maintains a set of environment variables while it builds.  These can be ac
 #### Debugging Your BuildInfo File
 You can get verbose debugging output from the `foray` tool by supplying the `-d` option. You can use the same mechanism to debug your BuildInfo file: Simply import the Python `logging` module, and add logging statements to BuildInfo, like this
 
+```python
 	    logging.debug('This is a debugging string')
+```
 
 Your debugging messages will only appear when the `-d` option is supplied to Foray.
 
