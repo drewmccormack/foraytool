@@ -1402,71 +1402,71 @@ class Builder:
         self.buildCancelled = True
         if self.currentTarget: self.currentTarget.stopBuild()
 
-# -----------------
-# Main program
-# -----------------
+if __name__ == "__main__":
 
-# Read environment variables
-numThreads = os.environ.setdefault('FORAY_NUM_THREADS', '1')
+    """ Main program """
 
-# Parse input arguments
-from optparse import OptionParser
-parser = OptionParser()
-parser.add_option("-d", "--debug", action="store_true", dest="debug", help="Print debug info.",
-    default=False)
-parser.add_option("-v", "--verbose", action="store_true", dest="verbose", help="Print verbose output.",
-    default=False)
-parser.add_option("-c", "--clean", action="store_true", dest="clean", help="Whether to rebuild completely.",
-    default=False)
-parser.add_option("-j", "--threads", type="int", dest="numthreads", help="The number of threads to use.",
-    default=int(numThreads))
-parser.add_option("-i", "--buildinfo", type="string", dest="buildinfofile", help="The build info file name.",
-    default='buildinfo')
-parser.add_option("-b", "--buildconfig", type="string", action="append", dest="configs",
-    help="The configuration to build.")
-parser.add_option("-n", "--nodepends", action="store_true", dest="nodepends", help="Do not account for file dependencies.",
-    default=False)
-(options, targets) = parser.parse_args()
+    # Read environment variables
+    numThreads = os.environ.setdefault('FORAY_NUM_THREADS', '1')
 
-# Debugging
-if options.debug: logging.getLogger('').setLevel(logging.DEBUG)
+    # Parse input arguments
+    from optparse import OptionParser
+    parser = OptionParser()
+    parser.add_option("-d", "--debug", action="store_true", dest="debug", help="Print debug info.",
+        default=False)
+    parser.add_option("-v", "--verbose", action="store_true", dest="verbose", help="Print verbose output.",
+        default=False)
+    parser.add_option("-c", "--clean", action="store_true", dest="clean", help="Whether to rebuild completely.",
+        default=False)
+    parser.add_option("-j", "--threads", type="int", dest="numthreads", help="The number of threads to use.",
+        default=int(numThreads))
+    parser.add_option("-i", "--buildinfo", type="string", dest="buildinfofile", help="The build info file name.",
+        default='buildinfo')
+    parser.add_option("-b", "--buildconfig", type="string", action="append", dest="configs",
+        help="The configuration to build.")
+    parser.add_option("-n", "--nodepends", action="store_true", dest="nodepends", help="Do not account for file dependencies.",
+        default=False)
+    (options, targets) = parser.parse_args()
 
-# Build info
-import signal
-buildinfoGlobals = {}
-buildinfoPath = FindFileInAncestorDirs(os.getcwd(), options.buildinfofile)
-if not buildinfoPath:
-    sys.exit('Could not locate buildinfo file')
-exec(compile(open(buildinfoPath).read(), buildinfoPath, 'exec'), buildinfoGlobals)
-if 'buildinfo' not in buildinfoGlobals:
-    sys.exit('No buildinfo dict found in buildinfo file')
-buildInfo = buildinfoGlobals['buildinfo']
+    # Debugging
+    if options.debug: logging.getLogger('').setLevel(logging.DEBUG)
 
-# File types
-FortranSourceFile.configure(buildInfo.get('fortranfiles'))
-CSourceFile.configure(buildInfo.get('cfiles'))
+    # Build info
+    import signal
+    buildinfoGlobals = {}
+    buildinfoPath = FindFileInAncestorDirs(os.getcwd(), options.buildinfofile)
+    if not buildinfoPath:
+        sys.exit('Could not locate buildinfo file')
+    exec(compile(open(buildinfoPath).read(), buildinfoPath, 'exec'), buildinfoGlobals)
+    if 'buildinfo' not in buildinfoGlobals:
+        sys.exit('No buildinfo dict found in buildinfo file')
+    buildInfo = buildinfoGlobals['buildinfo']
 
-# Project root
-if 'projectroot' in buildInfo:
-    projectRoot = ExpandShellArgs(buildInfo['projectroot'])
-else:
-    projectRoot = os.path.dirname(buildinfoPath)
-os.environ['FORAY_PROJECT_ROOT'] = projectRoot
+    # File types
+    FortranSourceFile.configure(buildInfo.get('fortranfiles'))
+    CSourceFile.configure(buildInfo.get('cfiles'))
 
-# Create builder and build
-builder = Builder(buildInfo, targets, options.configs, projectRoot, options.numthreads,
-    options.clean, options.nodepends, options.debug, options.verbose)
-signal.signal(signal.SIGINT, builder.handleStopSignal)
-signal.signal(signal.SIGQUIT, builder.handleStopSignal)
-signal.signal(signal.SIGABRT, builder.handleStopSignal)
-if options.debug:
-    if builder.build(): builder.install()
-else:
-    try:
-        if builder.build():
-            builder.install()
-    except Exception as e:
-        print('Foray Error: ' + str(e.args[0]))
+    # Project root
+    if 'projectroot' in buildInfo:
+        projectRoot = ExpandShellArgs(buildInfo['projectroot'])
+    else:
+        projectRoot = os.path.dirname(buildinfoPath)
+    os.environ['FORAY_PROJECT_ROOT'] = projectRoot
+
+    # Create builder and build
+    builder = Builder(buildInfo, targets, options.configs, projectRoot, options.numthreads,
+        options.clean, options.nodepends, options.debug, options.verbose)
+    signal.signal(signal.SIGINT, builder.handleStopSignal)
+    signal.signal(signal.SIGQUIT, builder.handleStopSignal)
+    signal.signal(signal.SIGABRT, builder.handleStopSignal)
+    if options.debug:
+        if builder.build(): builder.install()
+    else:
+        try:
+            if builder.build():
+                builder.install()
+        except Exception as e:
+            print('Foray Error: ' + str(e.args[0]))
 
 
 # ------------------------------------------------------------------------------------
